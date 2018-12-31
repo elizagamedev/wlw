@@ -4,7 +4,6 @@
 #include <list>
 #include <shlwapi.h>
 #include <tlhelp32.h>
-#include <boost/log/trivial.hpp>
 
 
 namespace win32
@@ -65,87 +64,6 @@ namespace win32
         std::wstring result(buffer, size);
         delete[] buffer;
         return result;
-    }
-
-    int run_event_loop()
-    {
-        BOOST_LOG_TRIVIAL(trace) << "Running Windows event loop";
-        for (;;) {
-            MSG msg;
-            BOOL bRet = GetMessageW(&msg, NULL, 0, 0);
-
-            BOOST_LOG_TRIVIAL(trace) << "message " << msg.message;
-
-            if (bRet > 0) {
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
-            } else if (bRet < 0) {
-                throw win32::get_last_error_exception();
-            } else {
-                return msg.wParam;
-            }
-        }
-    }
-
-    void with_suspend_threads(std::function<void()> func)
-    {
-        DWORD proc_id = GetCurrentProcessId();
-        DWORD thread_id = GetCurrentThreadId();
-        std::list<DWORD> suspended_thread_ids;
-
-        // First, iterate through the list, collecting all threads that should
-        // be suspended and recording them.
-        HANDLE h = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, proc_id);
-        if (h == INVALID_HANDLE_VALUE) {
-            throw win32::get_last_error_exception();
-        }
-        THREADENTRY32 te;
-        te.dwSize = sizeof(te);
-        DWORD min_size = FIELD_OFFSET(THREADENTRY32, th32OwnerProcessID)
-                         + sizeof(te.th32OwnerProcessID);
-        if (Thread32First(h, &te)) {
-            do {
-                if (te.dwSize < min_size) {
-                    continue;
-                }
-                if (te.th32OwnerProcessID != proc_id) {
-                    continue;
-                }
-                if (te.th32ThreadID == thread_id) {
-                    continue;
-                }
-                HANDLE thread
-                    = OpenThread(THREAD_ALL_ACCESS, FALSE, te.th32ThreadID);
-                if (thread != NULL) {
-                    SuspendThread(thread);
-                    CloseHandle(thread);
-                    suspended_thread_ids.push_back(te.th32ThreadID);
-                }
-                te.dwSize = sizeof(te);
-            } while (Thread32Next(h, &te));
-        }
-        CloseHandle(h);
-
-        // Now run the function
-        std::exception_ptr eptr;
-        try {
-            func();
-        } catch (...) {
-            eptr = std::current_exception();
-        }
-
-        // Resume the threads
-        for (auto thread_id : suspended_thread_ids) {
-            HANDLE thread = OpenThread(THREAD_ALL_ACCESS, FALSE, thread_id);
-            if (thread != NULL) {
-                ResumeThread(thread);
-                CloseHandle(thread);
-            }
-        }
-
-        if (eptr) {
-            std::rethrow_exception(eptr);
-        }
     }
 
     std::wstring get_system_directory()

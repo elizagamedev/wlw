@@ -27,7 +27,7 @@ target_compile_definitions(wtwm_hook_server_dll PRIVATE
 set_target_properties(wtwm_hook_server_dll PROPERTIES
   OUTPUT_NAME wtwm_hook_server${bittage})
 
-add_executable(wtwm_hook_server_exe
+add_executable(wtwm_hook_server_exe WIN32
   exe/main.cpp)
 target_link_libraries(wtwm_hook_server_exe PUBLIC wtwm_hook_server_dll)
 target_include_directories(wtwm_hook_server_exe PUBLIC exe)

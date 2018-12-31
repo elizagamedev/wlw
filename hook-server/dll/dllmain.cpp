@@ -15,7 +15,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL,
         DisableThreadLibraryCalls(hinstDLL);
         // If the daemon process ID is 0, that means we are loaded in the
         // server exe and have not set it yet.
-        if (daemon_process_id == 0) {
+        if (hooks::daemon_process_id == 0) {
             return TRUE;
         }
         try {

@@ -8,12 +8,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(wtwm_daemon
+add_executable(wtwm_daemon WIN32
   # src/HookListener.h
   # src/HookManager.cpp
   # src/HookManager.h
-  src/Window.cpp
-  src/Window.h
+  # src/Window.cpp
+  # src/Window.h
   # src/WindowList.cpp
   # src/WindowList.h
   src/main.cpp)

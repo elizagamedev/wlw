@@ -10,6 +10,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(wtwm_common STATIC
   src/HookEvent.h
+  src/MainWindow.cpp
+  src/MainWindow.h
   src/WindowsHook.cpp
   src/WindowsHook.h
   src/win32.cpp
