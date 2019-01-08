@@ -25,6 +25,7 @@ KeepEmptyLinesAtTheStartOfBlocks: 'false'
 Language: Cpp
 NamespaceIndentation: All
 PointerAlignment: Right
+SortIncludes: 'true'
 SpaceBeforeAssignmentOperators: 'true'
 SpaceBeforeParens: ControlStatements
 SpaceInEmptyParentheses: 'false'

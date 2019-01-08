@@ -1,18 +1,17 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from conans import ConanFile, CMake, tools
-import os
+from conans import ConanFile, CMake
 
 
-class WtwmHookServerConan(ConanFile):
-    name = "wtwm-daemon"
+class WlwHookConan(ConanFile):
+    name = "wlw-hook"
     version = "0.0.0"
-    description = "Windows Tiling Window Manager - Daemon"
-    url = "https://github.com/elizagamedev/wtwm"
+    description = "Windows Lua Windower - Windows hook daemon"
+    url = "https://github.com/elizagamedev/wlw"
     author = "Eliza Velasquez"
     license = "GPL-3.0+"
-    exports_sources = ["CMakeLists.txt", "src/*"]
+    exports_sources = ["CMakeLists.txt", "dll/*", "exe/*"]
     generators = "cmake"
     settings = {
         "os": ["Windows"],
@@ -21,7 +20,7 @@ class WtwmHookServerConan(ConanFile):
         "build_type": None,
     }
     requires = (
-        "wtwm-common/{}@eliza/testing".format(version),
+        "wlw-common/{}@eliza/testing".format(version),
         "boost/1.69.0@conan/stable",
     )
     default_options = "boost:without_test=True"
@@ -33,6 +32,8 @@ class WtwmHookServerConan(ConanFile):
 
     def package(self):
         self.copy("*.exe", dst="bin", src="bin")
+        self.copy("*.dll", dst="bin", src="bin")
 
     def deploy(self):
         self.copy("*.exe", dst="bin", src="bin")
+        self.copy("*.dll", dst="bin", src="bin")

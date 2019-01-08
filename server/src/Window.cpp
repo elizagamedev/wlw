@@ -1,8 +1,7 @@
 #include "Window.h"
 #include "win32.h"
-#include <psapi.h>
 #include <iostream>
-
+#include <psapi.h>
 
 Window::Window(HWND hwnd)
     : hwnd_(hwnd)
@@ -23,14 +22,15 @@ Window::Window(HWND hwnd)
             // buffer size larger than the actual title, so don't depend on it
             // to determine the actual length of the string
             title_ = title_buffer;
-            delete [] title_buffer;
+            delete[] title_buffer;
         }
     }
     // Process name
     {
         DWORD process_id;
         GetWindowThreadProcessId(hwnd, &process_id);
-        HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process_id);
+        HANDLE process = OpenProcess(
+            PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process_id);
         if (process == NULL) {
             // Access is likely denied, so don't populate the process name.
             process_name_ = std::nullopt;

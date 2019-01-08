@@ -1,15 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from conans import ConanFile, CMake, tools
-import os
+from conans import ConanFile, CMake
 
 
-class WtwmHookServerConan(ConanFile):
-    name = "wtwm-common"
+class WlwCommonConan(ConanFile):
+    name = "wlw-common"
     version = "0.0.0"
-    description = "Windows Tiling Window Manager - Common library"
-    url = "https://github.com/elizagamedev/wtwm"
+    description = "Windows Lua Windower - Common library"
+    url = "https://github.com/elizagamedev/wlw"
     author = "Eliza Velasquez"
     license = "GPL-3.0+"
     exports_sources = ["CMakeLists.txt", "src/*"]
@@ -33,4 +32,4 @@ class WtwmHookServerConan(ConanFile):
         self.copy("*.lib", dst="lib", src="lib")
 
     def package_info(self):
-        self.cpp_info.libs = ["wtwm_common"]
+        self.cpp_info.libs = ["wlw_common"]

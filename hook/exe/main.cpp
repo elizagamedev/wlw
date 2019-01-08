@@ -1,21 +1,19 @@
+#include "MainWindow.h"
 #include "WindowsHook.h"
 #include "hooks.h"
 #include "win32.h"
-#include "MainWindow.h"
+#include <atomic>
 #include <boost/log/trivial.hpp>
 #include <boost/log/utility/setup/file.hpp>
 #include <exception>
-#include <windows.h>
 #include <thread>
-#include <atomic>
-
+#include <windows.h>
 
 #ifdef _WIN64
-#define DLL_NAME L"wtwm_hook_server64.dll"
+#define BASENAME "wlw_hook64"
 #else
-#define DLL_NAME L"wtwm_hook_server32.dll"
+#define BASENAME "wlw_hook32"
 #endif
-
 
 class DaemonProcMonitorThread
 {
@@ -23,16 +21,15 @@ public:
     DaemonProcMonitorThread(MainWindow &window)
         : stop_(false)
     {
-        thread_ = std::thread(
-            [this, &window]() {
-                while (!stop_) {
-                    if (!hooks::is_connected(1000)) {
-                        BOOST_LOG_TRIVIAL(fatal) << "WTWM daemon process is down";
-                        window.close();
-                        break;
-                    }
+        thread_ = std::thread([this, &window]() {
+            while (!stop_) {
+                if (!hooks::is_connected(1000)) {
+                    BOOST_LOG_TRIVIAL(fatal) << "WLW server process is down";
+                    window.close();
+                    break;
                 }
-            });
+            }
+        });
     }
 
     ~DaemonProcMonitorThread()
@@ -51,7 +48,8 @@ int main_cpp(HINSTANCE hInstance,
              LPSTR lpCmdLine,
              int nCmdShow)
 {
-    boost::log::add_file_log("wtwm-hook-server.log", boost::log::keywords::auto_flush=true);
+    boost::log::add_file_log(BASENAME ".log",
+                             boost::log::keywords::auto_flush = true);
 
     std::vector<std::wstring> args = win32::get_args();
     if (args.size() < 2) {
@@ -59,12 +57,15 @@ int main_cpp(HINSTANCE hInstance,
         return 1;
     }
     hooks::daemon_process_id = std::stoi(args[1]);
+    BOOST_LOG_TRIVIAL(trace) << "Before connect";
     hooks::connect();
 
-    HINSTANCE dll_instance = GetModuleHandleW(DLL_NAME);
+    HINSTANCE dll_instance = GetModuleHandleW(BASENAME L".dll");
+    WindowsHook cwp_hook(WH_CALLWNDPROC, hooks::callwndproc_proc, dll_instance,
+                         0);
     WindowsHook cbt_hook(WH_CBT, hooks::cbt_proc, dll_instance, 0);
 
-    MainWindow window(hInstance, L"wtwm-hook-server");
+    MainWindow window(hInstance, L"wlw-hook");
     DaemonProcMonitorThread daemon_monitor_thread(window);
     return window.run_event_loop();
 }

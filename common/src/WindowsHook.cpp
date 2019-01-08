@@ -1,7 +1,6 @@
 #include "WindowsHook.h"
-#include <boost/log/trivial.hpp>
 #include "win32.h"
-
+#include <boost/log/trivial.hpp>
 
 WindowsHook::WindowsHook(int idHook,
                          HOOKPROC lpfn,

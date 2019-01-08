@@ -1,10 +1,7 @@
-#include <windows.h>
-#include <memory>
-#include "hooks.h"
 #include "HookEvent.h"
-#include <boost/interprocess/exceptions.hpp>
-
-
+#include "hooks.h"
+#include <memory>
+#include <windows.h>
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL,
                                DWORD fdwReason,

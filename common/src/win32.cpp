@@ -1,10 +1,10 @@
 #include "win32.h"
 
+#include <boost/log/trivial.hpp>
 #include <exception>
 #include <list>
 #include <shlwapi.h>
 #include <tlhelp32.h>
-
 
 namespace win32
 {
@@ -40,30 +40,6 @@ namespace win32
         }
         LocalFree(argv);
         return args;
-    }
-
-    std::wstring get_module_file_name(HMODULE module)
-    {
-        WCHAR *buffer;
-        DWORD size = 16;
-        for (;;) {
-            buffer = new WCHAR[size];
-            size = GetModuleFileNameW(module, buffer, size);
-            DWORD error = GetLastError();
-            if (error == ERROR_SUCCESS) {
-                break;
-            }
-            delete[] buffer;
-            if (error == ERROR_INSUFFICIENT_BUFFER) {
-                size *= 2;
-            } else {
-                // Weird error that can't be handled
-                throw get_last_error_exception();
-            }
-        }
-        std::wstring result(buffer, size);
-        delete[] buffer;
-        return result;
     }
 
     std::wstring get_system_directory()

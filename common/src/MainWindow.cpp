@@ -2,7 +2,6 @@
 #include "win32.h"
 #include <boost/log/trivial.hpp>
 
-
 MainWindow::MainWindow(HINSTANCE hInstance, const WCHAR *name, WindowProc proc)
     : hInstance_(hInstance)
     , wndclass_(NULL)
@@ -19,17 +18,16 @@ MainWindow::MainWindow(HINSTANCE hInstance, const WCHAR *name, WindowProc proc)
         throw win32::get_last_error_exception();
     }
 
-    hwnd_ = CreateWindowExW(
-        0, // dwExStyle
-        reinterpret_cast<LPWSTR>(wndclass_), // lpClassName
-        name, // lpWindowName
-        0, // dwStyle
-        0, 0, 0, 0, // x, y, nWidth, nHeight
-        NULL, // hWndParent
-        NULL, // hMenu
-        hInstance_, // hInstance
-        nullptr // lpParam
-        );
+    hwnd_ = CreateWindowExW(0,                                   // dwExStyle
+                            reinterpret_cast<LPWSTR>(wndclass_), // lpClassName
+                            name,                                // lpWindowName
+                            0,                                   // dwStyle
+                            0, 0, 0, 0, // x, y, nWidth, nHeight
+                            NULL,       // hWndParent
+                            NULL,       // hMenu
+                            hInstance_, // hInstance
+                            nullptr     // lpParam
+                            );
     if (hwnd_ == NULL) {
         throw win32::get_last_error_exception();
     }
@@ -87,13 +85,12 @@ void MainWindow::close()
     PostMessageW(hwnd_, WM_CLOSE, 0, 0);
 }
 
-LRESULT CALLBACK MainWindow::proc_bootstrap(
-    HWND hwnd,
-    UINT uMsg,
-    WPARAM wParam,
-    LPARAM lParam)
+LRESULT CALLBACK MainWindow::proc_bootstrap(HWND hwnd,
+                                            UINT uMsg,
+                                            WPARAM wParam,
+                                            LPARAM lParam)
 {
-    MainWindow *self = reinterpret_cast<MainWindow*>(
+    MainWindow *self = reinterpret_cast<MainWindow *>(
         GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     // Handle close/destroy here
     switch (uMsg) {
