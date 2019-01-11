@@ -7,6 +7,7 @@
 #include <atomic>
 #include <list>
 #include <thread>
+#include <memory>
 
 class HookManager
 {
@@ -14,7 +15,7 @@ public:
     HookManager();
     ~HookManager();
 
-    void register_listener(HookListener *listener);
+    void register_listener(std::shared_ptr<HookListener> listener);
     void push_event(const HookEvent *e);
 
 private:
@@ -23,5 +24,5 @@ private:
     std::array<HANDLE, 2> hook_processes_;
     std::thread process_monitor_thread_;
     std::atomic_bool process_monitor_thread_stop_;
-    std::list<HookListener *> listeners_;
+    std::list<std::shared_ptr<HookListener>> listeners_;
 };

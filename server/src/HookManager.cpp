@@ -1,12 +1,15 @@
 #include "HookManager.h"
-#include "win32.h"
 #include <boost/dll.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/log/trivial.hpp>
 #include <chrono>
 #include <sstream>
+#include <outcome.hpp>
+#include <algorithm>
 
-static HANDLE start_hook_process(const WCHAR *name)
+namespace outcome = OUTCOME_V2_NAMESPACE;
+
+static outcome::checked<HANDLE, WindowsError> start_hook_process(const WCHAR *name)
 {
     boost::filesystem::path bin_dir
         = boost::dll::program_location().parent_path();
@@ -35,7 +38,7 @@ static HANDLE start_hook_process(const WCHAR *name)
                                  &si, &pi);
 
     if (!result) {
-        throw win32::get_last_error_exception();
+        return WindowsError::get_last();
     }
 
     CloseHandle(pi.hThread);
@@ -59,12 +62,12 @@ HookManager::HookManager()
                     start_process = true;
                 }
                 if (start_process) {
-                    try {
-                        hook_processes_[i]
-                            = start_hook_process(process_names[i]);
-                    } catch (const std::exception &e) {
+                    if (auto r = start_hook_process(process_names[i])) {
+                        hook_processes_[i] = r.value();
+                    } else {
                         BOOST_LOG_TRIVIAL(error)
-                            << "Error starting hook process: " << e.what();
+                        << L"Error starting hook process: "
+                        << r.error().string();
                     }
                 }
             }
@@ -92,16 +95,16 @@ HookManager::~HookManager()
     }
 }
 
-void HookManager::register_listener(HookListener *listener)
+void HookManager::register_listener(std::shared_ptr<HookListener> listener)
 {
     BOOST_LOG_TRIVIAL(trace) << "HookManager registering new listener "
                              << listener;
-    listeners_.push_back(listener);
+    listeners_.push_back(std::move(listener));
 }
 
 void HookManager::push_event(const HookEvent *e)
 {
-    for (HookListener *listener : listeners_) {
+    for (auto &listener : listeners_) {
         listener->hook_event_queue.push(HookEvent(*e));
     }
 }

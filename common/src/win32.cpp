@@ -1,6 +1,5 @@
 #include "win32.h"
 
-#include <boost/log/trivial.hpp>
 #include <exception>
 #include <list>
 #include <shlwapi.h>
@@ -8,27 +7,6 @@
 
 namespace win32
 {
-    std::string get_last_error_string()
-    {
-        LPVOID lpMsgBuf;
-        DWORD dw = GetLastError();
-
-        DWORD size = FormatMessageA(
-            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
-                | FORMAT_MESSAGE_IGNORE_INSERTS,
-            NULL, dw, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-            (LPTSTR)&lpMsgBuf, 0, NULL);
-
-        std::string result(static_cast<char *>(lpMsgBuf), size);
-        LocalFree(lpMsgBuf);
-        return result;
-    }
-
-    std::runtime_error get_last_error_exception()
-    {
-        return std::runtime_error(get_last_error_string());
-    }
-
     std::vector<std::wstring> get_args()
     {
         int argc;
@@ -42,18 +20,71 @@ namespace win32
         return args;
     }
 
-    std::wstring get_system_directory()
+    outcome::checked<std::wstring, WindowsError> string_to_wide(const std::string &source)
     {
-        UINT size = GetSystemDirectoryW(nullptr, 0);
+        if (source.empty()) {
+            return std::wstring();
+        }
+        int size = MultiByteToWideChar(
+            CP_UTF8,
+            MB_PRECOMPOSED | MB_ERR_INVALID_CHARS,
+            source.c_str(),
+            static_cast<int>(source.length()),
+            nullptr,
+            0);
         if (size == 0) {
-            throw win32::get_last_error_exception();
+            return WindowsError::get_last();
         }
-        WCHAR *buf = new WCHAR[size];
-        if (GetSystemDirectoryW(buf, size) != size - 1) {
-            throw win32::get_last_error_exception();
+        wchar_t *buf = new wchar_t[size];
+        int written = MultiByteToWideChar(
+            CP_UTF8,
+            MB_COMPOSITE,
+            source.c_str(),
+            static_cast<int>(source.length()),
+            buf,
+            size);
+        if (written < size) {
+            delete [] buf;
+            return WindowsError::get_last();
         }
-        std::wstring result(buf, size - 1);
-        delete[] buf;
+        std::wstring result(buf, size);
+        delete [] buf;
+        return result;
+    }
+
+    outcome::checked<std::string, WindowsError> string_from_wide(const std::wstring &source)
+    {
+        if (source.empty()) {
+            return std::string();
+        }
+        int size = WideCharToMultiByte(
+            CP_UTF8,
+            WC_ERR_INVALID_CHARS,
+            source.c_str(),
+            static_cast<int>(source.length()),
+            nullptr,
+            0,
+            nullptr,
+            nullptr);
+        if (size == 0) {
+            return WindowsError::get_last();
+        }
+        char *buf = new char[size];
+        int written = WideCharToMultiByte(
+            CP_UTF8,
+            WC_ERR_INVALID_CHARS,
+            source.c_str(),
+            static_cast<int>(source.length()),
+            buf,
+            size,
+            nullptr,
+            nullptr);
+        if (written < size) {
+            delete [] buf;
+            return WindowsError::get_last();
+        }
+        std::string result(buf, size);
+        delete [] buf;
         return result;
     }
 }

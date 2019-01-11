@@ -1,5 +1,4 @@
 #include "Window.h"
-#include "win32.h"
 #include <iostream>
 #include <psapi.h>
 
@@ -10,7 +9,7 @@ Window::Window(HWND hwnd)
     // Window info
     windowinfo_.cbSize = sizeof(windowinfo_);
     if (!GetWindowInfo(hwnd_, &windowinfo_)) {
-        throw win32::get_last_error_exception();
+        //throw WindowsException(GetLastError());
     }
     // Title
     {

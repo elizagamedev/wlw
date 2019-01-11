@@ -1,5 +1,4 @@
 #include "hooks.h"
-#include "win32.h"
 
 namespace hooks
 {
@@ -9,9 +8,8 @@ namespace hooks
 #pragma comment(linker, "/section:shared,RWS")
 
     HANDLE daemon_process_handle = NULL;
-    HWND daemon_window = NULL;
 
-    static BOOL CALLBACK enum_windows_proc(HWND hwnd, LPARAM lParam)
+    static BOOL CALLBACK connect_enum_windows_proc(HWND hwnd, LPARAM lParam)
     {
         DWORD process_id;
         GetWindowThreadProcessId(hwnd, &process_id);
@@ -25,18 +23,13 @@ namespace hooks
     void connect()
     {
         if (daemon_process_id == 0) {
-            throw std::runtime_error("Process ID is 0");
+            throw std::logic_error("Process ID is 0");
         }
-        // Find the daemon's window and open its process handle.
-        EnumWindows(enum_windows_proc, 0);
+        // Open its process handle.
         daemon_process_handle
             = OpenProcess(SYNCHRONIZE, FALSE, daemon_process_id);
         if (daemon_process_handle == NULL) {
-            throw win32::get_last_error_exception();
-        }
-        // Sanity check to make sure we're connected
-        if (!is_connected(0)) {
-            throw std::runtime_error("Could not connect to daemon");
+            return WindowsError::get_last();
         }
     }
 
@@ -53,9 +46,6 @@ namespace hooks
             return false;
         }
         if (daemon_process_handle == NULL) {
-            return false;
-        }
-        if (daemon_window == NULL) {
             return false;
         }
         return WaitForSingleObject(daemon_process_handle, ms) == WAIT_TIMEOUT;

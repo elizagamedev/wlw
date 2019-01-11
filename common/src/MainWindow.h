@@ -2,25 +2,30 @@
 
 #include <functional>
 #include <windows.h>
+#include <outcome.hpp>
+#include <memory>
+#include "WindowsError.h"
+
+namespace outcome = OUTCOME_V2_NAMESPACE;
 
 class MainWindow
 {
-    friend void swap(MainWindow &lhs, MainWindow &rhs);
-
 public:
     typedef std::function<LRESULT(HWND, UINT, WPARAM, LPARAM)> WindowProc;
 
-    MainWindow(HINSTANCE hInstance,
-               const WCHAR *name,
-               WindowProc proc = DefWindowProcW);
+    static outcome::checked<std::shared_ptr<MainWindow>, WindowsError> create(
+        HINSTANCE hInstance,
+        const WCHAR *name,
+        WindowProc proc = DefWindowProcW);
+
     ~MainWindow();
 
-    MainWindow(MainWindow &&);
-    MainWindow &operator=(MainWindow &&);
+    MainWindow(MainWindow &&) = delete;
+    MainWindow &operator=(MainWindow &&) = delete;
     MainWindow(const MainWindow &) = delete;
     MainWindow &operator=(const MainWindow &) = delete;
 
-    int run_event_loop();
+    outcome::checked<int, WindowsError> run_event_loop();
     void close();
 
     HWND hwnd() const
@@ -29,6 +34,8 @@ public:
     }
 
 private:
+    MainWindow();
+
     static LRESULT CALLBACK proc_bootstrap(HWND hwnd,
                                            UINT uMsg,
                                            WPARAM wParam,
@@ -39,5 +46,3 @@ private:
     HWND hwnd_;
     WindowProc proc_;
 };
-
-void swap(MainWindow &lhs, MainWindow &rhs);

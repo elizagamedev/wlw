@@ -12,11 +12,13 @@ add_library(wlw_common STATIC
   src/HookEvent.h
   src/MainWindow.cpp
   src/MainWindow.h
+  src/WindowsError.cpp
+  src/WindowsError.h
   src/WindowsHook.cpp
   src/WindowsHook.h
   src/win32.cpp
   src/win32.h)
-target_link_libraries(wlw_common PUBLIC CONAN_PKG::boost)
+target_link_libraries(wlw_common PUBLIC CONAN_PKG::Outcome)
 target_include_directories(wlw_common PUBLIC src)
 target_compile_definitions(wlw_common PUBLIC
   NOMINMAX)

@@ -18,14 +18,14 @@
 class DaemonProcMonitorThread
 {
 public:
-    DaemonProcMonitorThread(MainWindow &window)
+    DaemonProcMonitorThread(std::shared_ptr<MainWindow> window)
         : stop_(false)
     {
         thread_ = std::thread([this, &window]() {
             while (!stop_) {
                 if (!hooks::is_connected(1000)) {
                     BOOST_LOG_TRIVIAL(fatal) << "WLW server process is down";
-                    window.close();
+                    window->close();
                     break;
                 }
             }
@@ -65,7 +65,12 @@ int main_cpp(HINSTANCE hInstance,
                          0);
     WindowsHook cbt_hook(WH_CBT, hooks::cbt_proc, dll_instance, 0);
 
-    MainWindow window(hInstance, L"wlw-hook");
+    std::shared_ptr<MainWindow> window;
+    if (auto r = MainWindow::create(hInstance, L"wlw-hook")) {
+        window = r.value();
+    } else {
+        BOOST_LOG_TRIVIAL(fatal) << "Could not create main window: " << r.error().string();
+    }
     DaemonProcMonitorThread daemon_monitor_thread(window);
     return window.run_event_loop();
 }

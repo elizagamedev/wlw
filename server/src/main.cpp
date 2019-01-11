@@ -9,6 +9,9 @@
 #include <iostream>
 #include <psapi.h>
 #include <windows.h>
+#include <outcome.hpp>
+
+namespace outcome = OUTCOME_V2_NAMESPACE;
 
 int main_cpp(HINSTANCE hInstance,
              HINSTANCE hPrevInstance,
@@ -19,12 +22,13 @@ int main_cpp(HINSTANCE hInstance,
                              boost::log::keywords::auto_flush = true);
 
     HookManager hook_manager;
-    WindowList window_list(hook_manager);
+    auto window_list = WindowList::create(hook_manager);
 
-    MainWindow window(hInstance, L"wlw-server", [&hook_manager](
-                                                    HWND hwnd, UINT uMsg,
-                                                    WPARAM wParam,
-                                                    LPARAM lParam) -> LRESULT {
+    std::shared_ptr<MainWindow> window;
+    auto r = MainWindow::create(hInstance, L"wlw-server", [&hook_manager](
+                                    HWND hwnd, UINT uMsg,
+                                    WPARAM wParam,
+                                    LPARAM lParam) -> LRESULT {
         switch (uMsg) {
         case WM_COPYDATA: {
             const COPYDATASTRUCT *cds
@@ -39,8 +43,18 @@ int main_cpp(HINSTANCE hInstance,
             return DefWindowProcW(hwnd, uMsg, wParam, lParam);
         }
     });
-    BOOST_LOG_TRIVIAL(trace) << "Server window handle: " << window.hwnd();
-    return window.run_event_loop();
+    if (r) {
+        window = r.value();
+    } else {
+        BOOST_LOG_TRIVIAL(fatal) << "Could not create main window: " << r.error().string();
+        return 1;
+    }
+    if (auto r = window->run_event_loop()) {
+        return r.value();
+    } else {
+        BOOST_LOG_TRIVIAL(fatal) << "Error running main loop: " << r.error().string();
+        return 1;
+    }
 }
 
 extern "C" int CALLBACK WinMain(HINSTANCE hInstance,

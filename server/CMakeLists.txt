@@ -12,6 +12,8 @@ add_executable(wlw_server WIN32
   src/HookListener.h
   src/HookManager.cpp
   src/HookManager.h
+  src/PipeServer.cpp
+  src/PipeServer.h
   src/Window.cpp
   src/Window.h
   src/WindowList.cpp

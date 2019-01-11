@@ -19,8 +19,7 @@ class WlwCommonConan(ConanFile):
         "arch": ["x86", "x86_64"],
         "build_type": None,
     }
-    requires = "boost/1.69.0@conan/stable"
-    default_options = "boost:without_test=True"
+    requires = "Outcome/master@ned14/stable"
 
     def build(self):
         cmake = CMake(self)

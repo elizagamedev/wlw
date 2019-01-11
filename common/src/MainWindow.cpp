@@ -1,55 +1,47 @@
 #include "MainWindow.h"
-#include "win32.h"
-#include <boost/log/trivial.hpp>
 
-MainWindow::MainWindow(HINSTANCE hInstance, const WCHAR *name, WindowProc proc)
-    : hInstance_(hInstance)
-    , wndclass_(NULL)
-    , hwnd_(NULL)
-    , proc_(std::move(proc))
+outcome::checked<std::shared_ptr<MainWindow>, WindowsError> MainWindow::create(
+    HINSTANCE hInstance, const WCHAR *name, WindowProc proc)
 {
+    std::shared_ptr<MainWindow> result(new MainWindow());
+    result->hInstance_ = hInstance;
+    result->proc_ = std::move(proc);
+
     WNDCLASSEXW class_opts = {};
     class_opts.cbSize = sizeof(class_opts);
-    class_opts.lpfnWndProc = &MainWindow::proc_bootstrap;
-    class_opts.hInstance = hInstance_;
+    class_opts.lpfnWndProc = &proc_bootstrap;
+    class_opts.hInstance = hInstance;
     class_opts.lpszClassName = name;
-    wndclass_ = RegisterClassExW(&class_opts);
-    if (wndclass_ == NULL) {
-        throw win32::get_last_error_exception();
+    result->wndclass_ = RegisterClassExW(&class_opts);
+    if (result->wndclass_ == NULL) {
+        return WindowsError::get_last();
     }
 
-    hwnd_ = CreateWindowExW(0,                                   // dwExStyle
-                            reinterpret_cast<LPWSTR>(wndclass_), // lpClassName
-                            name,                                // lpWindowName
-                            0,                                   // dwStyle
-                            0, 0, 0, 0, // x, y, nWidth, nHeight
-                            NULL,       // hWndParent
-                            NULL,       // hMenu
-                            hInstance_, // hInstance
-                            nullptr     // lpParam
-                            );
-    if (hwnd_ == NULL) {
-        throw win32::get_last_error_exception();
+    result->hwnd_ = CreateWindowExW(
+        0,                                   // dwExStyle
+        reinterpret_cast<LPWSTR>(result->wndclass_), // lpClassName
+        name,                                // lpWindowName
+        0,                                   // dwStyle
+        0, 0, 0, 0, // x, y, nWidth, nHeight
+        NULL,       // hWndParent
+        NULL,       // hMenu
+        hInstance,  // hInstance
+        nullptr     // lpParam
+        );
+    if (result->hwnd_ == NULL) {
+        return WindowsError::get_last();
     }
 
-    SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    SetWindowLongPtrW(result->hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(result.get()));
+    return result;
 }
 
-MainWindow::MainWindow(MainWindow &&o)
+MainWindow::MainWindow()
     : hInstance_(NULL)
     , wndclass_(NULL)
     , hwnd_(NULL)
     , proc_(DefWindowProcW)
 {
-    using std::swap;
-    swap(*this, o);
-}
-
-MainWindow &MainWindow::operator=(MainWindow &&o)
-{
-    using std::swap;
-    swap(*this, o);
-    return *this;
 }
 
 MainWindow::~MainWindow()
@@ -62,9 +54,8 @@ MainWindow::~MainWindow()
     }
 }
 
-int MainWindow::run_event_loop()
+outcome::checked<int, WindowsError> MainWindow::run_event_loop()
 {
-    BOOST_LOG_TRIVIAL(trace) << "Running Windows event loop";
     for (;;) {
         MSG msg;
         BOOL bRet = GetMessageW(&msg, NULL, 0, 0);
@@ -73,7 +64,7 @@ int MainWindow::run_event_loop()
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         } else if (bRet < 0) {
-            throw win32::get_last_error_exception();
+            return WindowsError::get_last();
         } else {
             return static_cast<int>(msg.wParam);
         }
@@ -95,8 +86,6 @@ LRESULT CALLBACK MainWindow::proc_bootstrap(HWND hwnd,
     // Handle close/destroy here
     switch (uMsg) {
     case WM_CLOSE:
-    case WM_DESTROY:
-        BOOST_LOG_TRIVIAL(trace) << "Got a close/destroy message";
         PostQuitMessage(0);
         return 0;
     }
@@ -105,13 +94,4 @@ LRESULT CALLBACK MainWindow::proc_bootstrap(HWND hwnd,
     } else {
         return self->proc_(hwnd, uMsg, wParam, lParam);
     }
-}
-
-void swap(MainWindow &lhs, MainWindow &rhs)
-{
-    using std::swap;
-    swap(lhs.hInstance_, rhs.hInstance_);
-    swap(lhs.wndclass_, rhs.wndclass_);
-    swap(lhs.hwnd_, rhs.hwnd_);
-    swap(lhs.proc_, rhs.proc_);
 }

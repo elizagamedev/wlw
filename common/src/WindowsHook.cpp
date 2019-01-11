@@ -1,28 +1,24 @@
 #include "WindowsHook.h"
-#include "win32.h"
-#include <boost/log/trivial.hpp>
 
-WindowsHook::WindowsHook(int idHook,
-                         HOOKPROC lpfn,
-                         HINSTANCE hmod,
-                         DWORD dwThreadId)
+outcome::checked<WindowsHook, WindowsError> WindowsHook::create(
+    int idHook, HOOKPROC lpfn, HINSTANCE hmod, DWORD dwThreadId)
 {
-    if ((hook_ = SetWindowsHookExW(idHook, lpfn, hmod, dwThreadId)) == NULL) {
-        throw win32::get_last_error_exception();
+    WindowsHook result;
+    result.hook_ = SetWindowsHookExW(idHook, lpfn, hmod, dwThreadId);
+    if (result.hook_ == NULL) {
+        return WindowsError::get_last();
     }
-    BOOST_LOG_TRIVIAL(trace) << "Registered new hook (idHook " << idHook << ")";
+    return result;
 }
 
 WindowsHook::WindowsHook(WindowsHook &&o)
 {
-    using std::swap;
-    swap(hook_, o.hook_);
+    swap(*this, o);
 }
 
 WindowsHook &WindowsHook::operator=(WindowsHook &&o)
 {
-    using std::swap;
-    swap(hook_, o.hook_);
+    swap(*this, o);
     return *this;
 }
 
@@ -30,6 +26,11 @@ WindowsHook::~WindowsHook()
 {
     if (hook_ != NULL) {
         UnhookWindowsHookEx(hook_);
-        hook_ = NULL;
     }
+}
+
+void swap(WindowsHook &lhs, WindowsHook &rhs)
+{
+    using std::swap;
+    swap(lhs.hook_, rhs.hook_);
 }
