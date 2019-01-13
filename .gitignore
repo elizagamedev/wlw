@@ -1,3 +1,2 @@
-wlw-*/target/
-wlw-common/Cargo.lock
+target/
 **/*.rs.bak

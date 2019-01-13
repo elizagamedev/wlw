@@ -1,0 +1,19 @@
+[package]
+name = "wlw"
+version = "0.1.0"
+authors = ["Eliza Velasquez <elizagamedev@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+winapi = { version = "0.3.*", features = ["minwindef", "windef", "winuser", "errhandlingapi", "winbase", "winerror"] }
+
+[[bin]]
+name = "wlw-server"
+path = "src/server/main.rs"
+
+[[bin]]
+name = "wlw-hook"
+path = "src/hook/main.rs"
+
+[lib]
+path = "src/lib.rs"
