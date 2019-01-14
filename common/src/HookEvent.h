@@ -85,7 +85,7 @@ struct HookEvent {
     }
 
     enum Type : uint8_t {
-        CwpSize,
+        CwpSize = 0,
         CbtActivate,
         CbtCreateWindow,
         CbtDestroyWindow,

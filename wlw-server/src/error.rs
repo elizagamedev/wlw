@@ -29,6 +29,7 @@ impl fmt::Display for WindowsError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         unsafe {
             let mut buf: LPWSTR = mem::uninitialized();
+            #[allow(clippy::crosspointer_transmute)]
             let buf_ptr = mem::transmute::<*mut LPWSTR, LPWSTR>(&mut buf as *mut LPWSTR);
             let size = FormatMessageW(
                 FORMAT_MESSAGE_ALLOCATE_BUFFER
@@ -36,7 +37,7 @@ impl fmt::Display for WindowsError {
                     | FORMAT_MESSAGE_IGNORE_INSERTS,
                 ptr::null_mut(),
                 self.0,
-                MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT) as DWORD,
+                DWORD::from(MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT)),
                 buf_ptr,
                 0,
                 ptr::null_mut(),

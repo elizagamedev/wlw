@@ -3,8 +3,9 @@ use std::panic::{self, RefUnwindSafe};
 use std::{mem, ptr};
 use winapi::shared::basetsd::LONG_PTR;
 use winapi::shared::minwindef::{ATOM, HINSTANCE, LPARAM, LRESULT, UINT, WPARAM};
-use winapi::shared::ntdef::{LPCWSTR, LPWSTR};
+use winapi::shared::ntdef::LPCWSTR;
 use winapi::shared::windef::HWND;
+use winapi::um::libloaderapi::GetModuleHandleW;
 use winapi::um::winuser::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     GetWindowLongPtrW, PostMessageW, PostQuitMessage, RegisterClassExW, SetWindowLongPtrW,
@@ -12,7 +13,7 @@ use winapi::um::winuser::{
 };
 
 unsafe extern "system" fn window_proc_bootstrap<
-    WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT + RefUnwindSafe,
+    WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe,
 >(
     hwnd: HWND,
     msg: UINT,
@@ -27,30 +28,33 @@ unsafe extern "system" fn window_proc_bootstrap<
     if mw_ptr == 0 {
         DefWindowProcW(hwnd, msg, wparam, lparam)
     } else {
-        let mw = &mut *mem::transmute::<LONG_PTR, *mut MainWindow<WindowProc>>(mw_ptr as LONG_PTR);
-        match panic::catch_unwind(|| (mw.proc)(hwnd, msg, wparam, lparam)) {
+        let mw = &mut *(mw_ptr as *mut MainWindow<WindowProc>);
+        let result = match panic::catch_unwind(|| (mw.proc)(hwnd, msg, wparam, lparam)) {
             Ok(result) => result,
             Err(_) => {
                 mw.wndproc_panic = true;
-                DefWindowProcW(hwnd, msg, wparam, lparam)
+                true
             }
+        };
+        if result {
+            0
+        } else {
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
     }
 }
 
-pub struct MainWindow<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT + RefUnwindSafe> {
+pub struct MainWindow<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> {
     _wndclass: WindowClass,
     window: Window,
     proc: WindowProc,
     wndproc_panic: bool,
 }
 
-impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT + RefUnwindSafe> MainWindow<WindowProc> {
-    pub fn new(
-        instance: HINSTANCE,
-        name: &str,
-        proc: WindowProc,
-    ) -> Result<Box<Self>, WindowsError> {
+impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> MainWindow<WindowProc> {
+    pub fn new(name: &str, proc: WindowProc) -> Result<Box<Self>, WindowsError> {
+        let instance = unsafe { GetModuleHandleW(ptr::null()) };
+
         // Register class
         let wndclass = WindowClass::new::<WindowProc>(&name, instance)?;
         let window = Window::new(&wndclass, &name, instance)?;
@@ -63,9 +67,9 @@ impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT + RefUnwindSafe> Main
         unsafe {
             // A bug in winapi causes silliness with LONG_PTR on x86.
             #[cfg(target_pointer_width = "32")]
-            let ptr = mem::transmute::<*mut Self, LONG_PTR>(&mut *mw as *mut Self) as i32;
+            let ptr = &mut *mw as *mut Self as i32;
             #[cfg(target_pointer_width = "64")]
-            let ptr = mem::transmute::<*mut Self, LONG_PTR>(&mut *mw as *mut Self);
+            let ptr = &mut *mw as *mut Self as LONG_PTR;
             SetWindowLongPtrW(mw.window.hwnd, GWLP_USERDATA, ptr);
         }
         Ok(mw)
@@ -98,12 +102,12 @@ impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT + RefUnwindSafe> Main
     }
 }
 
-unsafe impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT + RefUnwindSafe> Sync
+unsafe impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> Sync
     for MainWindow<WindowProc>
 {
 }
 
-unsafe impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT + RefUnwindSafe> Send
+unsafe impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> Send
     for MainWindow<WindowProc>
 {
 }
@@ -114,7 +118,7 @@ struct WindowClass {
 }
 
 impl WindowClass {
-    fn new<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT + RefUnwindSafe>(
+    fn new<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe>(
         name: &str,
         instance: HINSTANCE,
     ) -> Result<WindowClass, WindowsError> {
@@ -146,10 +150,7 @@ impl WindowClass {
 impl Drop for WindowClass {
     fn drop(&mut self) {
         unsafe {
-            UnregisterClassW(
-                mem::transmute::<usize, LPWSTR>(self.wndclass as usize),
-                self.instance,
-            );
+            UnregisterClassW(self.wndclass as *mut u16, self.instance);
         }
     }
 }
@@ -169,7 +170,7 @@ impl Window {
         unsafe {
             let hwnd = CreateWindowExW(
                 0,
-                mem::transmute::<usize, LPCWSTR>(wndclass.wndclass as usize),
+                wndclass.wndclass as LPCWSTR,
                 wide_name.as_ptr(),
                 0,
                 0,
@@ -181,7 +182,7 @@ impl Window {
                 instance,
                 ptr::null_mut(),
             );
-            if hwnd == ptr::null_mut() {
+            if hwnd.is_null() {
                 Err(WindowsError::last())
             } else {
                 Ok(Window { hwnd })
@@ -203,18 +204,10 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::{thread, time};
-    use winapi::um::libloaderapi::GetModuleHandleW;
 
     #[test]
     fn create_close_and_drop() {
-        let mw = Arc::new(
-            MainWindow::new(
-                unsafe { GetModuleHandleW(ptr::null()) },
-                "test_window",
-                |hwnd, msg, wparam, lparam| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
-            )
-            .unwrap(),
-        );
+        let mw = Arc::new(MainWindow::new("test_window", |_, _, _, _| false).unwrap());
         let mw_close = Arc::clone(&mw);
         let handle = thread::spawn(move || {
             thread::sleep(time::Duration::from_millis(1000));
