@@ -1,8 +1,9 @@
 use crate::error::WindowsError;
 use std::panic::{self, RefUnwindSafe};
+use std::sync::Arc;
 use std::{mem, ptr};
 use winapi::shared::basetsd::LONG_PTR;
-use winapi::shared::minwindef::{ATOM, HINSTANCE, LPARAM, LRESULT, UINT, WPARAM};
+use winapi::shared::minwindef::{ATOM, BOOL, DWORD, HINSTANCE, LPARAM, LRESULT, UINT, WPARAM};
 use winapi::shared::ntdef::LPCWSTR;
 use winapi::shared::windef::HWND;
 use winapi::um::libloaderapi::GetModuleHandleW;
@@ -21,6 +22,7 @@ unsafe extern "system" fn window_proc_bootstrap<
     lparam: LPARAM,
 ) -> LRESULT {
     if msg == WM_CLOSE {
+        trace!("Received close signal");
         PostQuitMessage(0);
         return 0;
     }
@@ -44,6 +46,11 @@ unsafe extern "system" fn window_proc_bootstrap<
     }
 }
 
+// Ctrl-C handler
+static mut ctrlc_mainwindow: Option<Arc<MainWindow>> = None;
+
+unsafe extern "system" fn ctrlc_handler_routine(ctrl_type: DWORD) -> BOOL {}
+
 pub struct MainWindow<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> {
     _wndclass: WindowClass,
     window: Window,
@@ -52,13 +59,13 @@ pub struct MainWindow<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUn
 }
 
 impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> MainWindow<WindowProc> {
-    pub fn new(name: &str, proc: WindowProc) -> Result<Box<Self>, WindowsError> {
+    pub fn new(name: &str, proc: WindowProc) -> Result<Arc<Self>, WindowsError> {
         let instance = unsafe { GetModuleHandleW(ptr::null()) };
 
         // Register class
         let wndclass = WindowClass::new::<WindowProc>(&name, instance)?;
         let window = Window::new(&wndclass, &name, instance)?;
-        let mut mw = Box::new(MainWindow {
+        let mut mw = Arc::new(MainWindow {
             _wndclass: wndclass,
             window,
             proc,
@@ -90,6 +97,7 @@ impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> MainWin
             } else if ret < 0 {
                 return Err(WindowsError::last());
             } else {
+                trace!("Received quit message");
                 return Ok(msg.wParam as i32);
             }
         }
@@ -122,6 +130,7 @@ impl WindowClass {
         name: &str,
         instance: HINSTANCE,
     ) -> Result<WindowClass, WindowsError> {
+        trace!("Registering new window class {}", name);
         let mut wide_name: Vec<u16> = name.encode_utf16().collect();
         wide_name.push(0);
         let mut opts = WNDCLASSEXW {
@@ -165,6 +174,7 @@ impl Window {
         name: &str,
         instance: HINSTANCE,
     ) -> Result<Window, WindowsError> {
+        trace!("Creating new window with title \"{}\"", name);
         let mut wide_name: Vec<u16> = name.encode_utf16().collect();
         wide_name.push(0);
         unsafe {
@@ -202,7 +212,6 @@ impl Drop for Window {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::{thread, time};
 
     #[test]
@@ -218,4 +227,13 @@ mod tests {
         assert_eq!(rc, 0);
     }
 
+    #[test]
+    #[should_panic]
+    fn panic_in_window_proc() {
+        let mw = MainWindow::new("test_window", |_, _, _, _| {
+            panic!("Panic inside test_window proc")
+        })
+        .unwrap();
+        mw.run_event_loop().unwrap();
+    }
 }

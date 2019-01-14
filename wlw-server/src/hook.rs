@@ -10,12 +10,14 @@ use winapi::um::libloaderapi::{FreeLibrary, GetProcAddress, LoadLibraryW};
 pub use winapi::um::winuser::HOOKPROC;
 use winapi::um::winuser::{SetWindowsHookExW, UnhookWindowsHookEx, WH_CALLWNDPROC, WH_CBT};
 
+#[derive(Debug)]
 pub enum HookId {
     CallWndProc,
     Cbt,
 }
 
 pub struct WindowsHook {
+    hook_id: HookId,
     hook: HHOOK,
 }
 
@@ -25,6 +27,7 @@ impl WindowsHook {
         hook_proc: HookProc,
         library: &Library,
     ) -> Result<Self, WindowsError> {
+        trace!("Registering Windows hook: {:?}", hook_id);
         let winapi_hook_id = match hook_id {
             HookId::CallWndProc => WH_CALLWNDPROC,
             HookId::Cbt => WH_CBT,
@@ -34,7 +37,7 @@ impl WindowsHook {
             if hook.is_null() {
                 Err(WindowsError::last())
             } else {
-                Ok(WindowsHook { hook })
+                Ok(WindowsHook { hook_id, hook })
             }
         }
     }
@@ -42,6 +45,7 @@ impl WindowsHook {
 
 impl Drop for WindowsHook {
     fn drop(&mut self) {
+        trace!("Unregistering Windows hook: {:?}", self.hook_id);
         unsafe {
             UnhookWindowsHookEx(self.hook);
         }

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from conans import ConanFile, CMake
+import os
 
 
 class WlwHookDllConan(ConanFile):
@@ -15,7 +16,7 @@ class WlwHookDllConan(ConanFile):
     generators = "cmake"
     settings = {
         "os": ["Windows"],
-        "compiler": ["Visual Studio"],
+        "compiler": None,
         "arch": ["x86", "x86_64"],
         "build_type": None,
     }
@@ -32,7 +33,7 @@ class WlwHookDllConan(ConanFile):
         cmake.build()
 
     def package(self):
-        self.copy("wlw_hook*.dll", dst="bin", keep_path=False)
+        self.copy(os.path.join("*", "wlw_hook*.dll"), dst="bin", keep_path=False)
 
     def deploy(self):
         self.copy("*.dll", dst="bin", src="bin")

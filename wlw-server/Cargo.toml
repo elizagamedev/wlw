@@ -7,6 +7,8 @@ edition = "2018"
 [dependencies]
 winapi = { version = "0.3.6", features = ["minwindef", "windef", "winuser", "errhandlingapi", "winbase", "winerror"] }
 ctrlc = "3.1.1"
+log = "0.4"
+simple_logger = "1.0.1"
 
 [[bin]]
 name = "wlw-server"
