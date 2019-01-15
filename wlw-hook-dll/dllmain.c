@@ -2,7 +2,7 @@
 #include "HookEvent.h"
 
 #pragma data_seg(push, "shared")
-__declspec(dllexport) uint32_t server_pid = 0;
+uint32_t server_pid = 0;
 #pragma data_seg(pop)
 #pragma comment(linker, "/section:shared,RWS")
 
@@ -21,7 +21,7 @@ BOOL WINAPI DllMain(
     return FALSE;
 }
 
-__declspec(dllexport) LRESULT CALLBACK callwndproc_proc(int nCode, WPARAM wParam, LPARAM lParam)
+LRESULT CALLBACK callwndproc_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     const CWPSTRUCT *cwp = (const CWPSTRUCT *)lParam;
     HookEvent event;
@@ -44,7 +44,7 @@ __declspec(dllexport) LRESULT CALLBACK callwndproc_proc(int nCode, WPARAM wParam
     return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
 
-__declspec(dllexport) LRESULT CALLBACK cbt_proc(int nCode, WPARAM wParam, LPARAM lParam)
+LRESULT CALLBACK cbt_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     HookEvent event;
     switch (nCode) {

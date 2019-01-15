@@ -1,86 +1,132 @@
-#[cfg(target_pointer_width = "32")]
-const POINTER_WIDTH: &str = "32";
-#[cfg(target_pointer_width = "64")]
-const POINTER_WIDTH: &str = "64";
-
+mod hook;
+mod process;
+mod servermonitor;
+use crate::hook::{HookDll, HookId, Library, WindowsHook};
+use crate::servermonitor::{MonitorError, ServerMonitor};
 use ctrlc;
 use std::env;
-use std::path::Path;
-use std::sync::Arc;
-use wlw_server::hook::{HookDll, HookId, Library, WindowsHook};
+use std::error::Error;
+use std::fmt;
 use wlw_server::mainwindow::MainWindow;
+use wlw_server::windowserror::WindowsError;
 #[macro_use]
 extern crate log;
-use simple_logger;
+use flexi_logger::Logger;
+
+#[derive(Debug)]
+enum MainError {
+    PidIsMissing,
+    PidIsInvalid,
+    PidIs0,
+    HookDllIsMissing,
+    DllLoadError(WindowsError),
+    DllHookError(WindowsError),
+    MainWindowError(WindowsError),
+    CtrlCError,
+    EventLoop(WindowsError),
+    Monitor(MonitorError),
+}
+
+impl fmt::Display for MainError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            MainError::PidIsMissing => write!(f, "Must set WLW_PID"),
+            MainError::PidIsInvalid => write!(f, "WLW_PID is not a valid number"),
+            MainError::PidIs0 => write!(f, "WLW_PID cannot be 0"),
+            MainError::HookDllIsMissing => write!(f, "WLW_HOOK_DLL must be set"),
+            MainError::DllLoadError(e) => write!(f, "DLL load error: {}", e),
+            MainError::DllHookError(e) => write!(f, "Windows hook error: {}", e),
+            MainError::MainWindowError(e) => write!(f, "Window creation error: {}", e),
+            MainError::CtrlCError => write!(f, "Could not set Ctrl-C handler"),
+            MainError::EventLoop(e) => write!(f, "Error in Windows event loop: {}", e),
+            MainError::Monitor(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl Error for MainError {}
+
+fn run() -> Result<(), MainError> {
+    let server_pid = match env::var("WLW_PID") {
+        Ok(pid_str) => match pid_str.parse::<u32>() {
+            Ok(pid) => {
+                if pid == 0 {
+                    Err(MainError::PidIs0)
+                } else {
+                    Ok(pid)
+                }
+            }
+            Err(_) => Err(MainError::PidIsInvalid),
+        },
+        Err(_) => Err(MainError::PidIsMissing),
+    }?;
+    let dll_path = match env::var("WLW_HOOK_DLL") {
+        Ok(path) => Ok(path),
+        Err(_) => Err(MainError::HookDllIsMissing),
+    }?;
+    let library = match Library::new(&dll_path) {
+        Ok(o) => Ok(o),
+        Err(e) => Err(MainError::DllLoadError(e)),
+    }?;
+    let hook_dll = match HookDll::new(library, server_pid) {
+        Ok(o) => Ok(o),
+        Err(e) => Err(MainError::DllHookError(e)),
+    }?;
+    let mw = match MainWindow::new("wlw_hook", Box::new(|_, _, _, _| false)) {
+        Ok(o) => Ok(o),
+        Err(e) => Err(MainError::MainWindowError(e)),
+    }?;
+    // Ctrl-C handler
+    let ctrlc_mw = mw.clone();
+    match ctrlc::set_handler(move || ctrlc_mw.close()) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(MainError::CtrlCError),
+    }?;
+    // Monitor the server process to ensure it remains active
+    let mut monitor = ServerMonitor::new(server_pid, mw.clone());
+    // Hooks
+    let _callwndproc_hook = WindowsHook::new(
+        HookId::CallWndProc,
+        hook_dll.callwndproc_proc,
+        &hook_dll.library,
+    );
+    let _cbt_hook = WindowsHook::new(HookId::Cbt, hook_dll.cbt_proc, &hook_dll.library);
+    // Event loop
+    match mw.run_event_loop() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(MainError::EventLoop(e)),
+    }?;
+    // Stop server monitor thread
+    match monitor.stop() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(MainError::Monitor(e)),
+    }?;
+    Ok(())
+}
 
 fn main() {
-    simple_logger::init().unwrap();
-    std::process::exit(|| -> i32 {
-        let server_pid = match env::var("WLW_PID") {
-            Ok(o) => match o.parse::<u32>() {
-                Ok(o) => o,
-                Err(_) => {
-                    error!("WLW_PID is not a valid number");
-                    return 1;
-                }
-            },
-            Err(_) => {
-                error!("Must set WLW_PID to server PID");
-                return 1;
-            }
-        };
-        if server_pid == 0 {
-            error!("wLW_PID cannot be 0");
-            return 1;
+    Logger::with_env_or_str("trace")
+        .format(|w, record| {
+            #[cfg(target_pointer_width = "32")]
+            static WIDTH: &str = "32";
+            #[cfg(target_pointer_width = "64")]
+            static WIDTH: &str = "64";
+            write!(
+                w,
+                "HOOK{}:{} [{}] {}",
+                WIDTH,
+                record.level(),
+                record.module_path().unwrap_or("<unnamed>"),
+                record.args()
+            )
+        })
+        .start()
+        .unwrap();
+    match run() {
+        Ok(_) => {}
+        Err(e) => {
+            error!("{}", e);
+            std::process::exit(1);
         }
-        let dll_path = match env::var(format!("WLW_HOOK_DLL_{}", POINTER_WIDTH)) {
-            Ok(o) => o,
-            Err(_) => {
-                error!(
-                    "Must set WLW_HOOK_DLL_{} to the path of the hook DLL",
-                    POINTER_WIDTH
-                );
-                return 1;
-            }
-        };
-        let dll_path = Path::new(&dll_path);
-        let library = match Library::new(&dll_path) {
-            Ok(o) => o,
-            Err(e) => {
-                error!("Error loading hook DLL: {}", e);
-                return 1;
-            }
-        };
-        let hook_dll = match HookDll::new(library, server_pid) {
-            Ok(o) => o,
-            Err(e) => {
-                error!("Error loading hook DLL procs: {}", e);
-                return 1;
-            }
-        };
-        let mw = match MainWindow::new(&format!("wlw_hook{}", POINTER_WIDTH), |_, _, _, _| false) {
-            Ok(o) => Arc::new(o),
-            Err(e) => {
-                error!("Error creating main window: {}", e);
-                return 1;
-            }
-        };
-        // Hooks
-        let _callwndproc_hook = WindowsHook::new(
-            HookId::CallWndProc,
-            hook_dll.callwndproc_proc,
-            &hook_dll.library,
-        );
-        let _cbt_hook = WindowsHook::new(HookId::Cbt, hook_dll.cbt_proc, &hook_dll.library);
-        match mw.run_event_loop() {
-            Ok(o) => {
-                trace!("Exited successfully");
-                o
-            }
-            Err(e) => {
-                error!("Error running Windows loop: {}", e);
-                1
-            }
-        }
-    }());
+    }
 }

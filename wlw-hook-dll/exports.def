@@ -1,0 +1,4 @@
+EXPORTS
+server_pid @1
+callwndproc_proc @2
+cbt_proc @3

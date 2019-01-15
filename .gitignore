@@ -1,2 +1,5 @@
 target/
-**/*.rs.bak
+*.rs.bak
+*.dll
+*.exe
+deploy_manifest.txt

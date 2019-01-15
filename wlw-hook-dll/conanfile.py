@@ -12,7 +12,7 @@ class WlwHookDllConan(ConanFile):
     url = "https://github.com/elizagamedev/wlw"
     author = "Eliza Velasquez"
     license = "GPL-3.0+"
-    exports_sources = ["CMakeLists.txt", "*.c", "*.h"]
+    exports_sources = ["CMakeLists.txt", "*.c", "*.h", "exports.def"]
     generators = "cmake"
     settings = {
         "os": ["Windows"],

@@ -1,9 +1,12 @@
-use crate::error::WindowsError;
+use crate::util;
+use crate::windowserror::WindowsError;
+use std::ffi::OsString;
 use std::panic::{self, RefUnwindSafe};
 use std::sync::Arc;
 use std::{mem, ptr};
+#[cfg(target_pointer_width = "64")]
 use winapi::shared::basetsd::LONG_PTR;
-use winapi::shared::minwindef::{ATOM, BOOL, DWORD, HINSTANCE, LPARAM, LRESULT, UINT, WPARAM};
+use winapi::shared::minwindef::{ATOM, HINSTANCE, LPARAM, LRESULT, UINT, WPARAM};
 use winapi::shared::ntdef::LPCWSTR;
 use winapi::shared::windef::HWND;
 use winapi::um::libloaderapi::GetModuleHandleW;
@@ -13,9 +16,7 @@ use winapi::um::winuser::{
     TranslateMessage, UnregisterClassW, GWLP_USERDATA, MSG, WM_CLOSE, WNDCLASSEXW,
 };
 
-unsafe extern "system" fn window_proc_bootstrap<
-    WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe,
->(
+unsafe extern "system" fn window_proc_bootstrap(
     hwnd: HWND,
     msg: UINT,
     wparam: WPARAM,
@@ -30,7 +31,7 @@ unsafe extern "system" fn window_proc_bootstrap<
     if mw_ptr == 0 {
         DefWindowProcW(hwnd, msg, wparam, lparam)
     } else {
-        let mw = &mut *(mw_ptr as *mut MainWindow<WindowProc>);
+        let mw = &mut *(mw_ptr as *mut MainWindow);
         let result = match panic::catch_unwind(|| (mw.proc)(hwnd, msg, wparam, lparam)) {
             Ok(result) => result,
             Err(_) => {
@@ -46,26 +47,24 @@ unsafe extern "system" fn window_proc_bootstrap<
     }
 }
 
-// Ctrl-C handler
-static mut ctrlc_mainwindow: Option<Arc<MainWindow>> = None;
-
-unsafe extern "system" fn ctrlc_handler_routine(ctrl_type: DWORD) -> BOOL {}
-
-pub struct MainWindow<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> {
+pub struct MainWindow {
     _wndclass: WindowClass,
     window: Window,
-    proc: WindowProc,
+    proc: Box<dyn Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe>,
     wndproc_panic: bool,
 }
 
-impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> MainWindow<WindowProc> {
-    pub fn new(name: &str, proc: WindowProc) -> Result<Arc<Self>, WindowsError> {
+impl MainWindow {
+    pub fn new(
+        name: &str,
+        proc: Box<dyn Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe>,
+    ) -> Result<Arc<Self>, WindowsError> {
         let instance = unsafe { GetModuleHandleW(ptr::null()) };
 
         // Register class
-        let wndclass = WindowClass::new::<WindowProc>(&name, instance)?;
+        let wndclass = WindowClass::new(&name, instance)?;
         let window = Window::new(&wndclass, &name, instance)?;
-        let mut mw = Arc::new(MainWindow {
+        let mw = Arc::new(MainWindow {
             _wndclass: wndclass,
             window,
             proc,
@@ -73,13 +72,14 @@ impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> MainWin
         });
         unsafe {
             // A bug in winapi causes silliness with LONG_PTR on x86.
+            let mw_ptr = Arc::into_raw(mw);
             #[cfg(target_pointer_width = "32")]
-            let ptr = &mut *mw as *mut Self as i32;
+            let ptr = mw_ptr as i32;
             #[cfg(target_pointer_width = "64")]
-            let ptr = &mut *mw as *mut Self as LONG_PTR;
-            SetWindowLongPtrW(mw.window.hwnd, GWLP_USERDATA, ptr);
+            let ptr = mw_ptr as LONG_PTR;
+            SetWindowLongPtrW((*mw_ptr).window.hwnd, GWLP_USERDATA, ptr);
+            Ok(Arc::from_raw(mw_ptr))
         }
-        Ok(mw)
     }
 
     pub fn run_event_loop(&self) -> Result<i32, WindowsError> {
@@ -110,15 +110,9 @@ impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> MainWin
     }
 }
 
-unsafe impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> Sync
-    for MainWindow<WindowProc>
-{
-}
+unsafe impl Sync for MainWindow {}
 
-unsafe impl<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe> Send
-    for MainWindow<WindowProc>
-{
-}
+unsafe impl Send for MainWindow {}
 
 struct WindowClass {
     wndclass: ATOM,
@@ -126,17 +120,13 @@ struct WindowClass {
 }
 
 impl WindowClass {
-    fn new<WindowProc: Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe>(
-        name: &str,
-        instance: HINSTANCE,
-    ) -> Result<WindowClass, WindowsError> {
-        trace!("Registering new window class {}", name);
-        let mut wide_name: Vec<u16> = name.encode_utf16().collect();
-        wide_name.push(0);
+    fn new(name: &str, instance: HINSTANCE) -> Result<WindowClass, WindowsError> {
+        trace!("Registering new window class \"{}\"", name);
+        let wide_name = util::osstring_to_wstr(OsString::from(name));
         let mut opts = WNDCLASSEXW {
             cbSize: mem::size_of::<WNDCLASSEXW>() as u32,
             style: 0,
-            lpfnWndProc: Some(window_proc_bootstrap::<WindowProc>),
+            lpfnWndProc: Some(window_proc_bootstrap),
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: instance,
@@ -175,8 +165,7 @@ impl Window {
         instance: HINSTANCE,
     ) -> Result<Window, WindowsError> {
         trace!("Creating new window with title \"{}\"", name);
-        let mut wide_name: Vec<u16> = name.encode_utf16().collect();
-        wide_name.push(0);
+        let wide_name = util::osstring_to_wstr(OsString::from(name));
         unsafe {
             let hwnd = CreateWindowExW(
                 0,

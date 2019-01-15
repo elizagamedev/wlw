@@ -8,7 +8,11 @@ edition = "2018"
 winapi = { version = "0.3.6", features = ["minwindef", "windef", "winuser", "errhandlingapi", "winbase", "winerror"] }
 ctrlc = "3.1.1"
 log = "0.4"
-simple_logger = "1.0.1"
+flexi_logger = "0.10.4"
+
+[target.'cfg(debug_assertions)'.dependencies]
+glob = "0.2.11"
+
 
 [[bin]]
 name = "wlw-server"

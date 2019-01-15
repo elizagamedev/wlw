@@ -11,6 +11,7 @@ else()
 endif()
 
 add_library(wlw_hook SHARED
-  dllmain.c)
+  dllmain.c
+  exports.def)
 set_target_properties(wlw_hook PROPERTIES
   OUTPUT_NAME wlw_hook${bittage})
