@@ -83,7 +83,7 @@ fn run() -> Result<(), MainError> {
         Err(_) => Err(MainError::CtrlCError),
     }?;
     // Monitor the server process to ensure it remains active
-    let mut monitor = ServerMonitor::new(server_pid, mw.clone());
+    let monitor = ServerMonitor::new(server_pid, mw.clone());
     // Hooks
     let _callwndproc_hook = WindowsHook::new(
         HookId::CallWndProc,

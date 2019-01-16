@@ -101,8 +101,6 @@ impl HookManager {
 impl Drop for HookManager {
     fn drop(&mut self) {
         self.monitor_thread_run.store(false, Ordering::Relaxed);
-        if let Some(h) = self.monitor_thread.take() {
-            h.join().unwrap();
-        }
+        self.monitor_thread.take().unwrap().join().unwrap();
     }
 }

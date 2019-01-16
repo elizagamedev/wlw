@@ -1,5 +1,4 @@
 use crate::util;
-use std::error::Error;
 use std::{fmt, mem, ptr};
 use winapi::shared::minwindef::{DWORD, HLOCAL};
 use winapi::shared::ntdef::{LANG_NEUTRAL, LPWSTR, MAKELANGID, SUBLANG_DEFAULT};
@@ -9,7 +8,7 @@ use winapi::um::winbase::{
     FORMAT_MESSAGE_IGNORE_INSERTS,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Fail, PartialEq, Copy, Clone)]
 pub struct WindowsError(DWORD);
 
 impl WindowsError {
@@ -53,8 +52,6 @@ impl fmt::Display for WindowsError {
         }
     }
 }
-
-impl Error for WindowsError {}
 
 #[cfg(test)]
 mod tests {

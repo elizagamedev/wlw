@@ -74,19 +74,21 @@ impl ServerMonitor {
         }
     }
 
-    pub fn stop(&mut self) -> Result<(), MonitorError> {
-        if self.stopped {
-            Ok(())
-        } else {
-            self.stopped = true;
-            self.thread_run.store(false, Ordering::Relaxed);
-            self.thread.take().unwrap().join().unwrap()
-        }
+    pub fn stop(mut self) -> Result<(), MonitorError> {
+        self.stop_mut_ref()
+    }
+
+    fn stop_mut_ref(&mut self) -> Result<(), MonitorError> {
+        self.stopped = true;
+        self.thread_run.store(false, Ordering::Relaxed);
+        self.thread.take().unwrap().join().unwrap()
     }
 }
 
 impl Drop for ServerMonitor {
     fn drop(&mut self) {
-        self.stop().unwrap();
+        if !self.stopped {
+            self.stop_mut_ref().unwrap();
+        }
     }
 }

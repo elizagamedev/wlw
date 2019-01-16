@@ -56,14 +56,14 @@ pub struct MainWindow {
 
 impl MainWindow {
     pub fn new(
-        name: &str,
+        name: impl AsRef<str>,
         proc: Box<dyn Fn(HWND, UINT, WPARAM, LPARAM) -> bool + RefUnwindSafe>,
     ) -> Result<Arc<Self>, WindowsError> {
         let instance = unsafe { GetModuleHandleW(ptr::null()) };
 
         // Register class
-        let wndclass = WindowClass::new(&name, instance)?;
-        let window = Window::new(&wndclass, &name, instance)?;
+        let wndclass = WindowClass::new(name.as_ref(), instance)?;
+        let window = Window::new(&wndclass, name.as_ref(), instance)?;
         let mw = Arc::new(MainWindow {
             _wndclass: wndclass,
             window,
@@ -92,7 +92,7 @@ impl MainWindow {
                     DispatchMessageW(&mut msg as *mut MSG);
                 }
                 if self.wndproc_panic {
-                    panic!("Panicked in window proc");
+                    panic!("Panicked in wndproc thread");
                 }
             } else if ret < 0 {
                 return Err(WindowsError::last());
@@ -120,9 +120,9 @@ struct WindowClass {
 }
 
 impl WindowClass {
-    fn new(name: &str, instance: HINSTANCE) -> Result<WindowClass, WindowsError> {
-        trace!("Registering new window class \"{}\"", name);
-        let wide_name = util::osstring_to_wstr(OsString::from(name));
+    fn new(name: impl AsRef<str>, instance: HINSTANCE) -> Result<WindowClass, WindowsError> {
+        trace!("Registering new window class \"{}\"", name.as_ref());
+        let wide_name = util::osstring_to_wstr(OsString::from(name.as_ref()));
         let mut opts = WNDCLASSEXW {
             cbSize: mem::size_of::<WNDCLASSEXW>() as u32,
             style: 0,
@@ -161,11 +161,11 @@ struct Window {
 impl Window {
     fn new(
         wndclass: &WindowClass,
-        name: &str,
+        name: impl AsRef<str>,
         instance: HINSTANCE,
     ) -> Result<Window, WindowsError> {
-        trace!("Creating new window with title \"{}\"", name);
-        let wide_name = util::osstring_to_wstr(OsString::from(name));
+        trace!("Creating new window with title \"{}\"", name.as_ref());
+        let wide_name = util::osstring_to_wstr(OsString::from(name.as_ref()));
         unsafe {
             let hwnd = CreateWindowExW(
                 0,
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn create_close_and_drop() {
-        let mw = Arc::new(MainWindow::new("test_window", |_, _, _, _| false).unwrap());
+        let mw = MainWindow::new("test_window", Box::new(|_, _, _, _| false)).unwrap();
         let mw_close = Arc::clone(&mw);
         let handle = thread::spawn(move || {
             thread::sleep(time::Duration::from_millis(1000));
@@ -219,9 +219,10 @@ mod tests {
     #[test]
     #[should_panic]
     fn panic_in_window_proc() {
-        let mw = MainWindow::new("test_window", |_, _, _, _| {
-            panic!("Panic inside test_window proc")
-        })
+        let mw = MainWindow::new(
+            "test_window",
+            Box::new(|_, _, _, _| panic!("Panic inside window proc")),
+        )
         .unwrap();
         mw.run_event_loop().unwrap();
     }
