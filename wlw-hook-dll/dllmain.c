@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <stdio.h>
 #include "HookEvent.h"
 
 #pragma data_seg(push, "shared")
@@ -6,23 +7,82 @@ uint32_t server_pid = 0;
 #pragma data_seg(pop)
 #pragma comment(linker, "/section:shared,RWS")
 
+volatile LONG ready = FALSE;
+HANDLE pipe = INVALID_HANDLE_VALUE;
+CRITICAL_SECTION mutex;
+
+#define PIPE_NAME_BUF_LEN 256
+
 BOOL WINAPI DllMain(
     HINSTANCE hinstDLL,
     DWORD fdwReason,
     LPVOID lpvReserved)
 {
     switch (fdwReason) {
-    case DLL_PROCESS_ATTACH:
+    case DLL_PROCESS_ATTACH: {
         DisableThreadLibraryCalls(hinstDLL);
+        if (server_pid == 0) {
+            // PID has not been initialized; this is the hook process
+            return TRUE;
+        }
+        WCHAR pipe_name_buf[PIPE_NAME_BUF_LEN];
+        swprintf_s(pipe_name_buf, PIPE_NAME_BUF_LEN, L"\\\\.\\pipe\\wlw_server_%d", server_pid);
+        pipe = CreateFileW(pipe_name_buf, GENERIC_READ | GENERIC_WRITE,
+                           0, NULL, OPEN_EXISTING, 0, NULL);
+        if (pipe == INVALID_HANDLE_VALUE) {
+            return FALSE;
+        }
+        DWORD mode = PIPE_READMODE_MESSAGE;
+        if (!SetNamedPipeHandleState(pipe, &mode, NULL, NULL)) {
+            CloseHandle(pipe);
+            return FALSE;
+        }
+        InitializeCriticalSection(&mutex);
+        InterlockedExchange(&ready, TRUE);
         return TRUE;
-    case DLL_PROCESS_DETACH:
+    }
+    case DLL_PROCESS_DETACH: {
+        if (ready) {
+            EnterCriticalSection(&mutex);
+            InterlockedExchange(&ready, FALSE);
+            LeaveCriticalSection(&mutex);
+            DeleteCriticalSection(&mutex);
+            if (pipe != INVALID_HANDLE_VALUE) {
+                CloseHandle(pipe);
+            }
+        }
         return TRUE;
+    }
     }
     return FALSE;
 }
 
+inline void transact(HookEvent *send, uint32_t *recv)
+{
+    EnterCriticalSection(&mutex);
+
+    DWORD num_read;
+    BOOL ret = TransactNamedPipe(pipe,
+                                 (LPVOID)send, sizeof(HookEvent),
+                                 (LPVOID)recv, sizeof(uint32_t),
+                                 &num_read,
+                                 NULL);
+
+    if (ret) {
+        LeaveCriticalSection(&mutex);
+    } else {
+        InterlockedExchange(&ready, FALSE);
+        CloseHandle(pipe);
+        pipe = INVALID_HANDLE_VALUE;
+        LeaveCriticalSection(&mutex);
+    }
+}
+
 LRESULT CALLBACK callwndproc_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
+    if (!ready) {
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
     const CWPSTRUCT *cwp = (const CWPSTRUCT *)lParam;
     HookEvent event;
     switch (cwp->message) {
@@ -34,18 +94,16 @@ LRESULT CALLBACK callwndproc_proc(int nCode, WPARAM wParam, LPARAM lParam)
     default:
         return CallNextHookEx(NULL, nCode, wParam, lParam);
     }
-    /* COPYDATASTRUCT cds; */
-    /* cds.dwData = 0xDEADBEEF; */
-    /* cds.cbData = sizeof(event); */
-    /* cds.lpData = &event; */
-    /* SendMessageW(daemon_window, WM_COPYDATA, */
-    /*              (WPARAM)daemon_window, */
-    /*              (LPARAM)&cds); */
+    uint32_t recv;
+    transact(&event, &recv);
     return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
 
 LRESULT CALLBACK cbt_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
+    if (!ready) {
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
     HookEvent event;
     switch (nCode) {
     case HCBT_ACTIVATE: {
@@ -92,12 +150,7 @@ LRESULT CALLBACK cbt_proc(int nCode, WPARAM wParam, LPARAM lParam)
     default:
         return CallNextHookEx(NULL, nCode, wParam, lParam);
     }
-    /* COPYDATASTRUCT cds; */
-    /* cds.dwData = 0xDEADBEEF; */
-    /* cds.cbData = sizeof(event); */
-    /* cds.lpData = &event; */
-    /* SendMessageW(daemon_window, WM_COPYDATA, */
-    /*              (WPARAM)daemon_window, */
-    /*              (LPARAM)&cds); */
+    uint32_t recv;
+    transact(&event, &recv);
     return CallNextHookEx(NULL, nCode, wParam, lParam);
 }

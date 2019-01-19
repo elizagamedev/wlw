@@ -7,6 +7,7 @@ use crate::servermonitor::ServerMonitor;
 use std::env;
 use std::error::Error;
 use std::fmt;
+use wintrap::{self, Signal};
 use wlw_server::windowserror::WindowsError;
 #[macro_use]
 extern crate log;
@@ -40,30 +41,42 @@ impl fmt::Display for MainError {
 impl Error for MainError {}
 
 fn run() -> Result<i32, MainError> {
-    let server_pid = env::var("WLW_PID")
-        .map_err(|_| MainError::PidIsMissing)?
-        .parse::<u32>()
-        .map_err(|_| MainError::PidIsInvalid)?;
-    if server_pid == 0 {
-        return Err(MainError::PidIs0);
-    }
-    let dll_path = env::var("WLW_HOOK_DLL").map_err(|_| MainError::HookDllIsMissing)?;
-    let library = Library::new(&dll_path).map_err(MainError::DllLoadError)?;
-    let hook_dll = HookDll::new(library, server_pid).map_err(MainError::DllHookError)?;
-    // Monitor the server process to ensure it remains active
-    let _monitor = ServerMonitor::new(server_pid, |_| {
-        error!("IMPLEMENT THIS CLOSURE");
-    });
-    // Hooks
-    let _callwndproc_hook = WindowsHook::new(
-        HookId::CallWndProc,
-        hook_dll.callwndproc_proc,
-        &hook_dll.library,
-    );
-    let _cbt_hook = WindowsHook::new(HookId::Cbt, hook_dll.cbt_proc, &hook_dll.library);
-    // Event loop
-    let rc = windowsloop::run_event_loop().map_err(MainError::EventLoop)?;
-    Ok(rc)
+    let main_thread_id = windowsloop::get_current_thread_id();
+    wintrap::trap(
+        &[Signal::CtrlC, Signal::CloseWindow, Signal::CloseConsole],
+        move |_| {
+            trace!("Received interrupt");
+            windowsloop::post_quit_message(main_thread_id, 1).unwrap();
+        },
+        || {
+            let server_pid = env::var("WLW_PID")
+                .map_err(|_| MainError::PidIsMissing)?
+                .parse::<u32>()
+                .map_err(|_| MainError::PidIsInvalid)?;
+            if server_pid == 0 {
+                return Err(MainError::PidIs0);
+            }
+            let dll_path = env::var("WLW_HOOK_DLL").map_err(|_| MainError::HookDllIsMissing)?;
+            let library = Library::new(&dll_path).map_err(MainError::DllLoadError)?;
+            let hook_dll = HookDll::new(library, server_pid).map_err(MainError::DllHookError)?;
+            // Hooks
+            let _callwndproc_hook = WindowsHook::new(
+                HookId::CallWndProc,
+                hook_dll.callwndproc_proc,
+                &hook_dll.library,
+            );
+            let _cbt_hook = WindowsHook::new(HookId::Cbt, hook_dll.cbt_proc, &hook_dll.library);
+            // Monitor the server process to ensure it remains active
+            let _monitor = ServerMonitor::new(server_pid, move |e| {
+                error!("Server connection seems to have failed: {}", e);
+                windowsloop::post_quit_message(main_thread_id, 1).unwrap();
+            });
+            // Event loop
+            let rc = windowsloop::run_event_loop().map_err(MainError::EventLoop)?;
+            Ok(rc)
+        },
+    )
+    .unwrap()
 }
 
 fn main() {

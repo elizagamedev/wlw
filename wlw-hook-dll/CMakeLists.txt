@@ -12,6 +12,14 @@ endif()
 
 add_library(wlw_hook SHARED
   dllmain.c
+  HookEvent.h
   exports.def)
 set_target_properties(wlw_hook PROPERTIES
-  OUTPUT_NAME wlw_hook${bittage})
+  OUTPUT_NAME wlw_hook${bittage}
+  C_STANDARD 99)
+
+add_executable(size_test
+  size_test.c
+  HookEvent.h)
+set_target_properties(size_test PROPERTIES
+  C_STANDARD 99)

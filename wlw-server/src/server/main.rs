@@ -1,38 +1,31 @@
 #[macro_use]
 extern crate log;
-#[cfg(debug_assertions)]
 use wintrap::{self, Signal};
-mod debug;
-mod hookmanager;
-mod pipeserver;
-use crate::hookmanager::HookManager;
-use crate::pipeserver::PipeServer;
+pub mod context;
+#[cfg(debug_assertions)]
+pub mod debug;
+pub mod hookevent;
+pub mod hookmanager;
+pub mod pipeserver;
+use crate::context::Context;
+use crossbeam_channel as xchan;
+
 use flexi_logger::Logger;
-use std::error;
-use std::fmt;
 
-#[derive(Debug)]
-enum MainError {
-    PipeServerInit(pipeserver::Error),
-}
-
-impl fmt::Display for MainError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            MainError::PipeServerInit(e) => write!(f, "Error creating pipe server: {}", e),
-        }
-    }
-}
-
-impl error::Error for MainError {}
-
-fn run() -> Result<(), MainError> {
-    // Pipe server
-    let pipe_name = format!("wlw_server_{}", std::process::id());
-    let _ps = PipeServer::new(pipe_name, |_: pipeserver::Request<usize, usize>| {}, |_| {})
-        .map_err(MainError::PipeServerInit)?;
-    // Hook manager
-    let _hm = HookManager::new();
+fn run() -> Result<(), context::Error> {
+    let (event_sender, event_receiver) = xchan::unbounded::<context::Event>();
+    let interrupt_event_sender = event_sender.clone();
+    let mut context = Context::new(event_sender, event_receiver)?;
+    wintrap::trap(
+        &[Signal::CtrlC, Signal::CloseWindow, Signal::CloseConsole],
+        move |_| {
+            interrupt_event_sender
+                .send(context::Event::Interrupt)
+                .unwrap()
+        },
+        move || context.run(),
+    )
+    .unwrap()?;
     Ok(())
 }
 

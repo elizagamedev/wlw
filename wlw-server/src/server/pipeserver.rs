@@ -1,11 +1,13 @@
-use crossbeam_channel;
+use crossbeam_channel as xchan;
 use std::cell::RefCell;
 use std::ffi::OsString;
+use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::{error, fmt, mem, panic, ptr};
+use winapi::shared::minwindef::TRUE;
 use winapi::shared::minwindef::{DWORD, FALSE, LPCVOID, LPVOID};
 use winapi::shared::ntdef::HANDLE;
 use winapi::shared::winerror::{ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, WAIT_TIMEOUT};
@@ -15,6 +17,7 @@ use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::ioapiset::GetOverlappedResult;
 use winapi::um::minwinbase::OVERLAPPED;
 use winapi::um::namedpipeapi::{ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe};
+use winapi::um::synchapi::ResetEvent;
 use winapi::um::synchapi::{CreateEventW, SetEvent, WaitForMultipleObjects};
 use winapi::um::winbase::{
     FILE_FLAG_OVERLAPPED, INFINITE, PIPE_ACCESS_DUPLEX, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
@@ -27,6 +30,7 @@ use wlw_server::windowserror::WindowsError;
 pub enum Error {
     NewEvent(WindowsError),
     SetEvent(WindowsError),
+    ResetEvent(WindowsError),
     NewPipe(WindowsError),
     ConnectPipe(WindowsError),
     DisconnectPipe(WindowsError),
@@ -34,6 +38,7 @@ pub enum Error {
     WritePipe(WindowsError),
     ReadPipe(WindowsError),
     PollFailed(WindowsError),
+    SizeMismatch,
 }
 
 impl error::Error for Error {}
@@ -43,6 +48,7 @@ impl fmt::Display for Error {
         match self {
             Error::NewEvent(e) => write!(f, "Error creating new event: {}", e),
             Error::SetEvent(e) => write!(f, "Error setting event: {}", e),
+            Error::ResetEvent(e) => write!(f, "Error resetting event: {}", e),
             Error::NewPipe(e) => write!(f, "Error creating new pipe: {}", e),
             Error::ConnectPipe(e) => write!(f, "Error connecting pipe: {}", e),
             Error::DisconnectPipe(e) => write!(f, "Error disconnecting pipe: {}", e),
@@ -52,6 +58,7 @@ impl fmt::Display for Error {
             Error::WritePipe(e) => write!(f, "Error writing to pipe: {}", e),
             Error::ReadPipe(e) => write!(f, "Error reading from pipe: {}", e),
             Error::PollFailed(e) => write!(f, "Error polling pipes: {}", e),
+            Error::SizeMismatch => write!(f, "Data does not match expected size"),
         }
     }
 }
@@ -62,8 +69,15 @@ struct Event {
 }
 
 impl Event {
-    fn new() -> Result<Self, Error> {
-        let handle = unsafe { CreateEventW(ptr::null_mut(), FALSE, FALSE, ptr::null_mut()) };
+    fn new(manual_reset: bool, initial_state: bool) -> Result<Self, Error> {
+        let handle = unsafe {
+            CreateEventW(
+                ptr::null_mut(),
+                if manual_reset { TRUE } else { FALSE },
+                if initial_state { TRUE } else { FALSE },
+                ptr::null_mut(),
+            )
+        };
         if handle.is_null() {
             Err(Error::NewEvent(WindowsError::last()))
         } else {
@@ -84,6 +98,14 @@ impl Event {
     fn set(&self) -> Result<(), Error> {
         if unsafe { SetEvent(self.handle) } == FALSE {
             Err(Error::SetEvent(WindowsError::last()))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn reset(&self) -> Result<(), Error> {
+        if unsafe { ResetEvent(self.handle) } == FALSE {
+            Err(Error::ResetEvent(WindowsError::last()))
         } else {
             Ok(())
         }
@@ -115,7 +137,7 @@ impl Pipe {
                 PIPE_UNLIMITED_INSTANCES,
                 output_size as DWORD,
                 input_size as DWORD,
-                0,
+                1000,
                 ptr::null_mut(),
             )
         };
@@ -166,18 +188,28 @@ impl Pipe {
         data: *const u8,
         size: usize,
         overlap: &mut OVERLAPPED,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
+        let mut num_written: DWORD = mem::uninitialized();
         let result = WriteFile(
             self.handle,
             data as LPCVOID,
             size as DWORD,
-            ptr::null_mut(),
+            &mut num_written as *mut DWORD,
             overlap as *mut OVERLAPPED,
         );
-        if result == FALSE {
-            Err(Error::WritePipe(WindowsError::last()))
+        if result != FALSE {
+            if (num_written as usize) == size {
+                Ok(true)
+            } else {
+                unreachable!();
+            }
         } else {
-            Ok(())
+            let last_error = GetLastError();
+            if last_error == ERROR_IO_PENDING {
+                Ok(false)
+            } else {
+                Err(Error::ReadPipe(WindowsError::new(last_error)))
+            }
         }
     }
 
@@ -186,18 +218,28 @@ impl Pipe {
         data: *mut u8,
         size: usize,
         overlap: &mut OVERLAPPED,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
+        let mut num_read: DWORD = mem::uninitialized();
         let result = ReadFile(
             self.handle,
             data as LPVOID,
             size as DWORD,
-            ptr::null_mut(),
+            &mut num_read as *mut DWORD,
             overlap as *mut OVERLAPPED,
         );
-        if result == FALSE {
-            Err(Error::ReadPipe(WindowsError::last()))
+        if result != FALSE {
+            if (num_read as usize) == size {
+                Ok(true)
+            } else {
+                unreachable!();
+            }
         } else {
-            Ok(())
+            let last_error = GetLastError();
+            if last_error == ERROR_IO_PENDING {
+                Ok(false)
+            } else {
+                Err(Error::ReadPipe(WindowsError::new(last_error)))
+            }
         }
     }
 }
@@ -216,11 +258,11 @@ pub struct Request<ReqType: Sized + Copy, ResType: Sized + Copy> {
     index: usize,
     id: usize,
     event: Arc<Event>,
-    channel: crossbeam_channel::Sender<Response<ResType>>,
+    channel: xchan::Sender<Response<ResType>>,
 }
 
-pub struct Response<ResType: Sized + Copy> {
-    message: ResType,
+struct Response<ResType: Sized + Copy> {
+    message: Option<ResType>,
     index: usize,
     id: usize,
 }
@@ -230,7 +272,18 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> Request<ReqType, ResType> {
         self.event.set().unwrap();
         self.channel
             .send(Response {
-                message,
+                message: Some(message),
+                index: self.index,
+                id: self.id,
+            })
+            .unwrap();
+    }
+
+    pub fn acknowledge(self) {
+        self.event.set().unwrap();
+        self.channel
+            .send(Response {
+                message: None,
                 index: self.index,
                 id: self.id,
             })
@@ -238,14 +291,19 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> Request<ReqType, ResType> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum ConnectionState {
     Disconnected,
     Connecting,
     Writing,
     Reading,
     AwaitingResponse,
-    FailedIo(Error),
+}
+
+#[derive(PartialEq)]
+enum PollAction<ReqType: Sized + Copy> {
+    DoNothing,
+    DispatchRequest(ReqType),
 }
 
 #[repr(C)]
@@ -286,7 +344,7 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> Connection<ReqType, ResType> 
         }))
     }
 
-    fn write_response(&mut self, response: ResType) {
+    fn write(&mut self, response: ResType) -> Result<PollAction<ReqType>, Error> {
         trace!("Writing response");
         assert_eq!(self.state, ConnectionState::AwaitingResponse);
         unsafe {
@@ -296,18 +354,32 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> Connection<ReqType, ResType> 
                 mem::size_of::<ResType>(),
                 &mut self.overlap,
             ) {
-                Ok(_) => {
+                Ok(true) => self.on_write_complete(),
+                Ok(false) => {
                     self.state = ConnectionState::Writing;
+                    Ok(PollAction::DoNothing)
                 }
-                Err(e) => {
-                    self.state = ConnectionState::FailedIo(e);
-                    Event::from(self.overlap.hEvent).set().unwrap();
-                }
+                Err(e) => Err(e),
             }
         }
     }
 
-    fn read_request(&mut self) {
+    fn connect(&mut self) -> Result<PollAction<ReqType>, Error> {
+        if self.state != ConnectionState::Disconnected {
+            panic!("Tried to connect an already-active pipe");
+        } else {
+            match unsafe { self.pipe.connect(&mut self.overlap) } {
+                Ok(true) => self.on_new_connection(),
+                Ok(false) => {
+                    self.state = ConnectionState::Connecting;
+                    Ok(PollAction::DoNothing)
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+
+    fn read(&mut self) -> Result<PollAction<ReqType>, Error> {
         trace!("Reading request");
         match unsafe {
             self.pipe.read(
@@ -316,52 +388,33 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> Connection<ReqType, ResType> 
                 &mut self.overlap,
             )
         } {
-            Ok(_) => {
+            Ok(true) => self.on_read_complete(),
+            Ok(false) => {
                 self.state = ConnectionState::Reading;
+                Ok(PollAction::DoNothing)
             }
-            Err(e) => {
-                self.state = ConnectionState::FailedIo(e);
-                Event::from(self.overlap.hEvent).set().unwrap();
-            }
+            Err(e) => Err(e),
         }
     }
 
-    pub fn reconnect(&mut self) -> Result<(), Error> {
-        if self.state != ConnectionState::Disconnected {
-            self.disconnect()?;
-        }
-        self.connect()?;
-        Ok(())
-    }
-
-    fn on_new_connection(&mut self) {
-        trace!("New client connected");
+    fn on_new_connection(&mut self) -> Result<PollAction<ReqType>, Error> {
+        trace!("on_new_connection");
         *self.num_free_connections.borrow_mut() -= 1;
         // Begin reading from the client
-        self.read_request();
+        self.read()
     }
 
-    fn on_read_complete(&mut self) -> ReqType {
+    fn on_read_complete(&mut self) -> Result<PollAction<ReqType>, Error> {
+        trace!("on_read_complete: Setting to AwaitingResponse");
+        Event::from(self.overlap.hEvent).reset()?;
         self.state = ConnectionState::AwaitingResponse;
-        unsafe { self.io_buffer.req }
+        Ok(PollAction::DispatchRequest(unsafe { self.io_buffer.req }))
     }
 
-    fn connect(&mut self) -> Result<(), Error> {
-        if self.state != ConnectionState::Disconnected {
-            panic!("Tried to connect an already-active pipe");
-        } else {
-            match unsafe { self.pipe.connect(&mut self.overlap) } {
-                Ok(true) => {
-                    self.on_new_connection();
-                    Ok(())
-                }
-                Ok(false) => {
-                    self.state = ConnectionState::Connecting;
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
-        }
+    fn on_write_complete(&mut self) -> Result<PollAction<ReqType>, Error> {
+        trace!("on_write_complete");
+        // Begin reading from client again
+        self.read()
     }
 
     fn disconnect(&mut self) -> Result<(), Error> {
@@ -374,6 +427,13 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> Connection<ReqType, ResType> 
         } else {
             panic!("Tried to disconnect an already-inactive pipe");
         }
+    }
+
+    fn reconnect(&mut self) -> Result<PollAction<ReqType>, Error> {
+        if self.state != ConnectionState::Disconnected {
+            self.disconnect()?;
+        }
+        self.connect()
     }
 
     fn get_overlapped_result(&mut self) -> Result<usize, Error> {
@@ -410,8 +470,8 @@ struct ConnectionList<ReqType: Sized + Copy, ResType: Sized + Copy> {
     response_ready_event: Arc<Event>,
     num_free_connections: Rc<RefCell<usize>>,
     on_new_request: Box<dyn Fn(Request<ReqType, ResType>) + Send>,
-    incoming_response_channel: crossbeam_channel::Receiver<Response<ResType>>,
-    outgoing_response_channel: crossbeam_channel::Sender<Response<ResType>>,
+    incoming_response_channel: xchan::Receiver<Response<ResType>>,
+    outgoing_response_channel: xchan::Sender<Response<ResType>>,
 }
 
 impl<ReqType: Sized + Copy, ResType: Sized + Copy> ConnectionList<ReqType, ResType> {
@@ -421,8 +481,8 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> ConnectionList<ReqType, ResTy
         num_free_connections: Rc<RefCell<usize>>,
         on_new_request: Box<dyn Fn(Request<ReqType, ResType>) + Send>,
     ) -> Result<Self, Error> {
-        let (outgoing_response_channel, incoming_response_channel) = crossbeam_channel::unbounded();
-        let response_ready_event = Event::new()?;
+        let (outgoing_response_channel, incoming_response_channel) = xchan::unbounded();
+        let response_ready_event = Event::new(false, false)?;
         let response_ready_event_borrow = response_ready_event.borrow();
         Ok(ConnectionList {
             pipe_name,
@@ -442,7 +502,7 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> ConnectionList<ReqType, ResTy
         self.event_list.events.reserve(amount);
         self.connections.reserve(amount);
         for _ in 0..amount {
-            let event = ManuallyDrop::new(Event::new()?);
+            let event = ManuallyDrop::new(Event::new(false, false)?);
             let mut connection =
                 Connection::new(&self.pipe_name, &event, self.num_free_connections.clone())?;
             connection.connect()?;
@@ -469,91 +529,110 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> ConnectionList<ReqType, ResTy
                 Ok(true)
             }
             _ => {
-                if wait_result == WAIT_OBJECT_0 + 1 {
-                    trace!("Response is ready");
+                let (index, mut result) = if wait_result == WAIT_OBJECT_0 + 1 {
                     let response = self.incoming_response_channel.recv().unwrap();
+                    let index = response.index;
                     let conn = self.connections.get_mut(response.index).unwrap();
-                    if conn.id == response.id && conn.state == ConnectionState::AwaitingResponse {
-                        conn.write_response(response.message);
+                    if conn.id == response.id {
+                        if conn.state == ConnectionState::AwaitingResponse {
+                            match response.message {
+                                Some(message) => {
+                                    trace!("Client {}.{} response is ready", index, conn.id);
+                                    (index, conn.write(message))
+                                }
+                                None => {
+                                    trace!("Client {}.{} response is empty", index, conn.id);
+                                    (index, conn.read())
+                                }
+                            }
+                        } else {
+                            unreachable!();
+                        }
+                    } else {
+                        (index, Ok(PollAction::DoNothing))
                     }
-                    return Ok(false);
-                }
+                } else {
+                    let index = (wait_result - WAIT_OBJECT_0 - 2) as usize;
+                    let conn = self.connections.get_mut(index).unwrap();
+                    trace!(
+                        "Client {}.{} has been signalled with state {:?}",
+                        index,
+                        conn.id,
+                        conn.state
+                    );
+                    (
+                        index,
+                        match conn.state {
+                            ConnectionState::Connecting => match conn.get_overlapped_result() {
+                                Ok(_) => conn.on_new_connection(),
+                                Err(e) => Err(e),
+                            },
+                            ConnectionState::Reading => match conn.get_overlapped_result() {
+                                Ok(num_transferred) => {
+                                    if num_transferred != mem::size_of::<ReqType>() {
+                                        Err(Error::SizeMismatch)
+                                    } else {
+                                        conn.on_read_complete()
+                                    }
+                                }
+                                Err(e) => Err(e),
+                            },
+                            ConnectionState::Writing => match conn.get_overlapped_result() {
+                                Ok(num_transferred) => {
+                                    if num_transferred != mem::size_of::<ResType>() {
+                                        Err(Error::SizeMismatch)
+                                    } else {
+                                        conn.on_write_complete()
+                                    }
+                                }
+                                Err(e) => Err(e),
+                            },
+                            ConnectionState::Disconnected => {
+                                panic!("Disconnected state somehow signalled")
+                            }
+                            ConnectionState::AwaitingResponse => {
+                                panic!("Await-response state somehow signalled")
+                            }
+                        },
+                    )
+                };
 
-                let index = (wait_result - WAIT_OBJECT_0 - 2) as usize;
-                let conn = self.connections.get_mut(index).unwrap();
-                trace!(
-                    "Client {} has been signalled with state {:?}",
-                    index,
-                    conn.state
-                );
-                match conn.state {
-                    ConnectionState::Connecting => match conn.get_overlapped_result() {
-                        Ok(_) => conn.on_new_connection(),
+                loop {
+                    let conn = self.connections.get_mut(index).unwrap();
+                    result = match result {
+                        Ok(PollAction::DoNothing) => break Ok(false),
+                        Ok(PollAction::DispatchRequest(message)) => {
+                            let request = Request {
+                                index,
+                                id: conn.id,
+                                message,
+                                event: self.response_ready_event.clone(),
+                                channel: self.outgoing_response_channel.clone(),
+                            };
+                            (self.on_new_request)(request);
+                            Ok(PollAction::DoNothing)
+                        }
+                        Err(Error::DisconnectPipe(e)) => return Err(Error::DisconnectPipe(e)),
                         Err(e) => {
-                            error!("Error connecting to client: {}", e);
-                            conn.reconnect()?;
+                            error!("Pipe connection problem: {}", e);
+                            conn.reconnect()
                         }
-                    },
-                    ConnectionState::Reading => match conn.get_overlapped_result() {
-                        // Send request to the callback
-                        Ok(num_transferred) => {
-                            if num_transferred != mem::size_of::<ReqType>() {
-                                error!("Read size does not match request type size");
-                                conn.reconnect()?;
-                            } else {
-                                let message = conn.on_read_complete();
-                                let request = Request {
-                                    index,
-                                    id: conn.id,
-                                    message,
-                                    event: self.response_ready_event.clone(),
-                                    channel: self.outgoing_response_channel.clone(),
-                                };
-                                (self.on_new_request)(request);
-                            }
-                        }
-                        Err(e) => {
-                            error!("Pipe read error: {}", e);
-                            conn.reconnect()?;
-                        }
-                    },
-                    ConnectionState::Writing => match conn.get_overlapped_result() {
-                        // Begin reading next message
-                        Ok(num_transferred) => {
-                            if num_transferred != mem::size_of::<ResType>() {
-                                error!("Write size does not match response type size");
-                                conn.reconnect()?;
-                            } else {
-                                conn.read_request()
-                            }
-                        }
-                        Err(e) => {
-                            error!("Pipe write error: {}", e);
-                            conn.reconnect()?;
-                        }
-                    },
-                    ConnectionState::FailedIo(e) => {
-                        error!("Pipe I/O error: {}", e);
-                        conn.reconnect()?;
-                    }
-                    ConnectionState::Disconnected => panic!("Disconnected state somehow signalled"),
-                    ConnectionState::AwaitingResponse => {
-                        panic!("Await-response state somehow signalled")
-                    }
+                    };
                 }
-                Ok(false)
             }
         }
     }
 }
 
-pub struct PipeServer {
+pub struct PipeServer<ReqType: Sized + Copy, ResType: Sized + Copy> {
     poll_thread: Option<JoinHandle<()>>,
     poll_thread_stop_event: Event,
+    reqtype: PhantomData<ReqType>,
+    restype: PhantomData<ResType>,
 }
 
-impl PipeServer {
-    pub fn new<ReqType: Sized + Copy, ResType: Sized + Copy>(
+impl<ReqType: Sized + Copy, ResType: Sized + Copy> PipeServer<ReqType, ResType> {
+    pub fn new(
         pipe_name: impl AsRef<str>,
         on_new_request: impl Fn(Request<ReqType, ResType>) + Send + 'static,
         on_fail: impl FnOnce(Error) + Send + 'static,
@@ -563,7 +642,7 @@ impl PipeServer {
             "\\\\.\\pipe\\{}",
             pipe_name.as_ref()
         )));
-        let poll_thread_stop_event = Event::new()?;
+        let poll_thread_stop_event = Event::new(false, false)?;
         let stop_event = poll_thread_stop_event.borrow();
         let poll_thread = Some(thread::spawn(move || {
             let run = move || -> Result<(), Error> {
@@ -596,11 +675,13 @@ impl PipeServer {
         Ok(PipeServer {
             poll_thread,
             poll_thread_stop_event,
+            reqtype: PhantomData,
+            restype: PhantomData,
         })
     }
 }
 
-impl Drop for PipeServer {
+impl<ReqType: Sized + Copy, ResType: Sized + Copy> Drop for PipeServer<ReqType, ResType> {
     fn drop(&mut self) {
         self.poll_thread_stop_event.set().unwrap();
         self.poll_thread.take().unwrap().join().unwrap();
@@ -611,7 +692,6 @@ impl Drop for PipeServer {
 mod tests {
     use super::*;
     use flexi_logger::Logger;
-    use std::marker::PhantomData;
     use std::str;
     use std::{thread, time};
     use winapi::um::fileapi::CreateFileW;
