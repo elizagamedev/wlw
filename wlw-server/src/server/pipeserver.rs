@@ -1,10 +1,12 @@
-use failure::Error;
+use crossbeam_channel;
 use std::cell::RefCell;
 use std::ffi::OsString;
+use std::mem::ManuallyDrop;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::{mem, panic, ptr};
-use winapi::shared::minwindef::{DWORD, FALSE, LPCVOID, LPVOID, TRUE};
+use std::{error, fmt, mem, panic, ptr};
+use winapi::shared::minwindef::{DWORD, FALSE, LPCVOID, LPVOID};
 use winapi::shared::ntdef::HANDLE;
 use winapi::shared::winerror::{ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, WAIT_TIMEOUT};
 use winapi::um::errhandlingapi::GetLastError;
@@ -21,45 +23,77 @@ use winapi::um::winbase::{
 use wlw_server::util;
 use wlw_server::windowserror::WindowsError;
 
-#[derive(Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Error {
+    NewEvent(WindowsError),
+    SetEvent(WindowsError),
+    NewPipe(WindowsError),
+    ConnectPipe(WindowsError),
+    DisconnectPipe(WindowsError),
+    GetOverlappedResult(WindowsError),
+    WritePipe(WindowsError),
+    ReadPipe(WindowsError),
+    PollFailed(WindowsError),
+}
+
+impl error::Error for Error {}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Error::NewEvent(e) => write!(f, "Error creating new event: {}", e),
+            Error::SetEvent(e) => write!(f, "Error setting event: {}", e),
+            Error::NewPipe(e) => write!(f, "Error creating new pipe: {}", e),
+            Error::ConnectPipe(e) => write!(f, "Error connecting pipe: {}", e),
+            Error::DisconnectPipe(e) => write!(f, "Error disconnecting pipe: {}", e),
+            Error::GetOverlappedResult(e) => {
+                write!(f, "Error getting overlapped I/O result: {}", e)
+            }
+            Error::WritePipe(e) => write!(f, "Error writing to pipe: {}", e),
+            Error::ReadPipe(e) => write!(f, "Error reading from pipe: {}", e),
+            Error::PollFailed(e) => write!(f, "Error polling pipes: {}", e),
+        }
+    }
+}
+
+#[repr(C)]
 struct Event {
     handle: HANDLE,
 }
 
 impl Event {
-    fn new(initial_state: bool) -> Result<Self, WindowsError> {
-        let handle = unsafe {
-            CreateEventW(
-                ptr::null_mut(),
-                FALSE,
-                if initial_state { TRUE } else { FALSE },
-                ptr::null_mut(),
-            )
-        };
+    fn new() -> Result<Self, Error> {
+        let handle = unsafe { CreateEventW(ptr::null_mut(), FALSE, FALSE, ptr::null_mut()) };
         if handle.is_null() {
-            Err(WindowsError::last())
+            Err(Error::NewEvent(WindowsError::last()))
         } else {
             Ok(Event { handle })
         }
     }
 
-    fn from(handle: HANDLE) -> Self {
-        Event { handle }
+    fn from(handle: HANDLE) -> ManuallyDrop<Self> {
+        ManuallyDrop::new(Event { handle })
     }
 
-    fn set(&mut self) -> Result<(), WindowsError> {
+    fn borrow(&self) -> ManuallyDrop<Self> {
+        ManuallyDrop::new(Event {
+            handle: self.handle,
+        })
+    }
+
+    fn set(&self) -> Result<(), Error> {
         if unsafe { SetEvent(self.handle) } == FALSE {
-            Err(WindowsError::last())
+            Err(Error::SetEvent(WindowsError::last()))
         } else {
             Ok(())
         }
     }
+}
 
-    fn free(&mut self) -> Result<(), WindowsError> {
+impl Drop for Event {
+    fn drop(&mut self) {
         if unsafe { CloseHandle(self.handle) } == FALSE {
-            Err(WindowsError::last())
-        } else {
-            Ok(())
+            panic!("Event CloseHandle failed: {}", WindowsError::last());
         }
     }
 }
@@ -72,11 +106,7 @@ struct Pipe {
 }
 
 impl Pipe {
-    fn new(
-        pipe_name: &Vec<u16>,
-        output_size: usize,
-        input_size: usize,
-    ) -> Result<Self, WindowsError> {
+    fn new(pipe_name: &Vec<u16>, output_size: usize, input_size: usize) -> Result<Self, Error> {
         let handle = unsafe {
             CreateNamedPipeW(
                 pipe_name.as_ptr(),
@@ -90,33 +120,31 @@ impl Pipe {
             )
         };
         if handle == INVALID_HANDLE_VALUE {
-            Err(WindowsError::last())
+            Err(Error::NewPipe(WindowsError::last()))
         } else {
             Ok(Pipe { handle })
         }
     }
 
-    fn connect(&mut self, overlap: &mut OVERLAPPED) -> Result<bool, WindowsError> {
-        unsafe {
-            ConnectNamedPipe(self.handle, overlap as *mut OVERLAPPED);
-            let last_error = GetLastError();
-            match last_error {
-                ERROR_PIPE_CONNECTED => Ok(true),
-                ERROR_IO_PENDING => Ok(false),
-                _ => Err(WindowsError::new(last_error)),
-            }
+    unsafe fn connect(&mut self, overlap: &mut OVERLAPPED) -> Result<bool, Error> {
+        ConnectNamedPipe(self.handle, overlap as *mut OVERLAPPED);
+        let last_error = GetLastError();
+        match last_error {
+            ERROR_PIPE_CONNECTED => Ok(true),
+            ERROR_IO_PENDING => Ok(false),
+            _ => Err(Error::ConnectPipe(WindowsError::new(last_error))),
         }
     }
 
-    fn disconnect(&mut self) -> Result<(), WindowsError> {
+    fn disconnect(&mut self) -> Result<(), Error> {
         if unsafe { DisconnectNamedPipe(self.handle) == FALSE } {
-            Err(WindowsError::last())
+            Err(Error::DisconnectPipe(WindowsError::last()))
         } else {
             Ok(())
         }
     }
 
-    fn get_overlapped_result(&mut self, overlap: &mut OVERLAPPED) -> Result<usize, WindowsError> {
+    fn get_overlapped_result(&mut self, overlap: &mut OVERLAPPED) -> Result<usize, Error> {
         let mut num_transferred: DWORD = unsafe { mem::uninitialized() };
         let success = unsafe {
             GetOverlappedResult(
@@ -127,22 +155,27 @@ impl Pipe {
             )
         };
         if success == FALSE {
-            Err(WindowsError::last())
+            Err(Error::GetOverlappedResult(WindowsError::last()))
         } else {
             Ok(num_transferred as usize)
         }
     }
 
-    unsafe fn write(&mut self, data: &[u8], overlap: &mut OVERLAPPED) -> Result<(), WindowsError> {
+    unsafe fn write(
+        &mut self,
+        data: *const u8,
+        size: usize,
+        overlap: &mut OVERLAPPED,
+    ) -> Result<(), Error> {
         let result = WriteFile(
             self.handle,
-            data.as_ptr() as LPCVOID,
-            data.len() as DWORD,
+            data as LPCVOID,
+            size as DWORD,
             ptr::null_mut(),
             overlap as *mut OVERLAPPED,
         );
         if result == FALSE {
-            Err(WindowsError::last())
+            Err(Error::WritePipe(WindowsError::last()))
         } else {
             Ok(())
         }
@@ -150,18 +183,19 @@ impl Pipe {
 
     unsafe fn read(
         &mut self,
-        data: &mut [u8],
+        data: *mut u8,
+        size: usize,
         overlap: &mut OVERLAPPED,
-    ) -> Result<(), WindowsError> {
+    ) -> Result<(), Error> {
         let result = ReadFile(
             self.handle,
-            data.as_ptr() as LPVOID,
-            data.len() as DWORD,
+            data as LPVOID,
+            size as DWORD,
             ptr::null_mut(),
             overlap as *mut OVERLAPPED,
         );
         if result == FALSE {
-            Err(WindowsError::last())
+            Err(Error::ReadPipe(WindowsError::last()))
         } else {
             Ok(())
         }
@@ -177,95 +211,110 @@ impl Drop for Pipe {
     }
 }
 
-#[derive(Debug, PartialEq)]
+pub struct Request<ReqType: Sized + Copy, ResType: Sized + Copy> {
+    pub message: ReqType,
+    index: usize,
+    id: usize,
+    event: Arc<Event>,
+    channel: crossbeam_channel::Sender<Response<ResType>>,
+}
+
+pub struct Response<ResType: Sized + Copy> {
+    message: ResType,
+    index: usize,
+    id: usize,
+}
+
+impl<ReqType: Sized + Copy, ResType: Sized + Copy> Request<ReqType, ResType> {
+    pub fn respond(self, message: ResType) {
+        self.event.set().unwrap();
+        self.channel
+            .send(Response {
+                message,
+                index: self.index,
+                id: self.id,
+            })
+            .unwrap();
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum ConnectionState {
     Disconnected,
     Connecting,
     Writing,
     Reading,
-    Idle,
-    FailedIo(WindowsError),
+    AwaitingResponse,
+    FailedIo(Error),
 }
 
-pub struct Connection {
-    // overlap MUST be the first item in the struct
+#[repr(C)]
+union ReqOrRes<ReqType: Sized + Copy, ResType: Sized + Copy> {
+    req: ReqType,
+    res: ResType,
+}
+
+struct Connection<ReqType: Sized + Copy, ResType: Sized + Copy> {
     overlap: OVERLAPPED,
+    id: usize,
     num_free_connections: Rc<RefCell<usize>>,
-    on_connect: Rc<Box<dyn Fn(&mut Connection) -> Result<(), Error>>>,
     pipe: Pipe,
     state: ConnectionState,
-    io_buffer: Vec<u8>,
-    on_completed_write: Option<Box<dyn Fn(&mut Connection) -> Result<(), Error>>>,
-    on_completed_read: Option<Box<dyn Fn(&mut Connection, Vec<u8>) -> Result<(), Error>>>,
-    on_failed_io: Option<Box<dyn Fn(WindowsError) -> Result<(), Error>>>,
+    io_buffer: ReqOrRes<ReqType, ResType>,
 }
 
-impl Connection {
+impl<ReqType: Sized + Copy, ResType: Sized + Copy> Connection<ReqType, ResType> {
     fn new(
         pipe_name: &Vec<u16>,
         event: &Event,
         num_free_connections: Rc<RefCell<usize>>,
-        on_connect: Rc<Box<dyn Fn(&mut Connection) -> Result<(), Error>>>,
-    ) -> Result<Box<Self>, WindowsError> {
+    ) -> Result<Box<Self>, Error> {
         let mut overlap: OVERLAPPED = unsafe { mem::zeroed() };
         overlap.hEvent = event.handle;
-        // TODO input and output size
-        let pipe = Pipe::new(pipe_name, 300, 300)?;
+        let pipe = Pipe::new(
+            pipe_name,
+            mem::size_of::<ResType>(),
+            mem::size_of::<ReqType>(),
+        )?;
         Ok(Box::new(Connection {
             overlap,
+            id: 0,
             num_free_connections,
-            on_connect,
             pipe,
             state: ConnectionState::Disconnected,
-            io_buffer: Vec::new(),
-            on_completed_write: None,
-            on_completed_read: None,
-            on_failed_io: None,
+            io_buffer: unsafe { mem::uninitialized() },
         }))
     }
 
-    pub fn write(
-        &mut self,
-        data: impl AsRef<[u8]>,
-        on_completed_write: Option<Box<dyn Fn(&mut Connection) -> Result<(), Error>>>,
-        on_failed_io: Option<Box<dyn Fn(WindowsError) -> Result<(), Error>>>,
-    ) {
-        trace!("Writing data to client");
-        assert_eq!(self.state, ConnectionState::Idle);
-        self.on_completed_write = on_completed_write;
-        self.on_failed_io = on_failed_io;
-        // Copy the data to write to our buffer
-        self.io_buffer.clear();
-        self.io_buffer.extend(data.as_ref());
-        match unsafe {
-            self.pipe
-                .write(self.io_buffer.as_slice(), &mut self.overlap)
-        } {
-            Ok(_) => {
-                self.state = ConnectionState::Writing;
-            }
-            Err(e) => {
-                self.state = ConnectionState::FailedIo(e);
-                Event::from(self.overlap.hEvent).set().unwrap();
+    fn write_response(&mut self, response: ResType) {
+        trace!("Writing response");
+        assert_eq!(self.state, ConnectionState::AwaitingResponse);
+        unsafe {
+            self.io_buffer.res = response;
+            match self.pipe.write(
+                &self.io_buffer as *const _ as *const u8,
+                mem::size_of::<ResType>(),
+                &mut self.overlap,
+            ) {
+                Ok(_) => {
+                    self.state = ConnectionState::Writing;
+                }
+                Err(e) => {
+                    self.state = ConnectionState::FailedIo(e);
+                    Event::from(self.overlap.hEvent).set().unwrap();
+                }
             }
         }
     }
 
-    pub fn read(
-        &mut self,
-        size: usize,
-        on_completed_read: Option<Box<dyn Fn(&mut Connection, Vec<u8>) -> Result<(), Error>>>,
-        on_failed_io: Option<Box<dyn Fn(WindowsError) -> Result<(), Error>>>,
-    ) {
-        trace!("Reading data from client");
-        assert_eq!(self.state, ConnectionState::Idle);
-        self.on_completed_read = on_completed_read;
-        self.on_failed_io = on_failed_io;
-        // Reserve enough memory to read the data
-        self.io_buffer.resize(size, 0);
+    fn read_request(&mut self) {
+        trace!("Reading request");
         match unsafe {
-            self.pipe
-                .read(self.io_buffer.as_mut_slice(), &mut self.overlap)
+            self.pipe.read(
+                &mut self.io_buffer as *mut _ as *mut u8,
+                mem::size_of::<ReqType>(),
+                &mut self.overlap,
+            )
         } {
             Ok(_) => {
                 self.state = ConnectionState::Reading;
@@ -285,59 +334,40 @@ impl Connection {
         Ok(())
     }
 
-    fn on_new_connection(&mut self) -> Result<(), Error> {
+    fn on_new_connection(&mut self) {
         trace!("New client connected");
-        self.state = ConnectionState::Idle;
         *self.num_free_connections.borrow_mut() -= 1;
-        let on_connect = self.on_connect.clone();
-        on_connect(self)
+        // Begin reading from the client
+        self.read_request();
     }
 
-    fn on_write_complete(&mut self) -> Result<(), Error> {
-        self.state = ConnectionState::Idle;
-        if let Some(cb) = self.on_completed_write.take() {
-            cb(self)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn on_read_complete(&mut self) -> Result<(), Error> {
-        self.state = ConnectionState::Idle;
-        if let Some(cb) = self.on_completed_read.take() {
-            cb(self, self.io_buffer.clone())
-        } else {
-            Ok(())
-        }
-    }
-
-    fn on_io_error(&mut self, e: WindowsError) -> Result<(), Error> {
-        self.state = ConnectionState::Idle;
-        if let Some(cb) = self.on_failed_io.take() {
-            cb(e)
-        } else {
-            Err(Error::from(e))
-        }
+    fn on_read_complete(&mut self) -> ReqType {
+        self.state = ConnectionState::AwaitingResponse;
+        unsafe { self.io_buffer.req }
     }
 
     fn connect(&mut self) -> Result<(), Error> {
         if self.state != ConnectionState::Disconnected {
             panic!("Tried to connect an already-active pipe");
         } else {
-            match self.pipe.connect(&mut self.overlap) {
-                Ok(true) => self.on_new_connection(),
+            match unsafe { self.pipe.connect(&mut self.overlap) } {
+                Ok(true) => {
+                    self.on_new_connection();
+                    Ok(())
+                }
                 Ok(false) => {
                     self.state = ConnectionState::Connecting;
                     Ok(())
                 }
-                Err(e) => Err(Error::from(e)),
+                Err(e) => Err(e),
             }
         }
     }
 
-    fn disconnect(&mut self) -> Result<(), WindowsError> {
+    fn disconnect(&mut self) -> Result<(), Error> {
         if self.state != ConnectionState::Disconnected {
             trace!("Disconnecting an active client connection");
+            self.id += 1;
             self.state = ConnectionState::Disconnected;
             *self.num_free_connections.borrow_mut() -= 1;
             self.pipe.disconnect()
@@ -346,51 +376,78 @@ impl Connection {
         }
     }
 
-    fn get_overlapped_result(&mut self) -> Result<usize, WindowsError> {
+    fn get_overlapped_result(&mut self) -> Result<usize, Error> {
         self.pipe.get_overlapped_result(&mut self.overlap)
     }
 }
 
-struct ConnectionList {
-    pipe_name: Vec<u16>,
-    events: Vec<Event>,
-    connections: Option<Vec<Box<Connection>>>,
-    num_free_connections: Rc<RefCell<usize>>,
-    on_connect: Rc<Box<dyn Fn(&mut Connection) -> Result<(), Error>>>,
+struct EventList {
+    events: Vec<ManuallyDrop<Event>>,
 }
 
-impl ConnectionList {
+impl EventList {
+    fn new(stop_event: ManuallyDrop<Event>, response_ready_event: ManuallyDrop<Event>) -> Self {
+        EventList {
+            events: vec![stop_event, response_ready_event],
+        }
+    }
+}
+
+impl Drop for EventList {
+    fn drop(&mut self) {
+        for event in self.events.iter_mut().skip(2) {
+            // free every event but the stop and response events
+            unsafe { ManuallyDrop::drop(event) };
+        }
+    }
+}
+
+struct ConnectionList<ReqType: Sized + Copy, ResType: Sized + Copy> {
+    pipe_name: Vec<u16>,
+    // Free connections before event_list
+    connections: Vec<Box<Connection<ReqType, ResType>>>,
+    event_list: EventList,
+    response_ready_event: Arc<Event>,
+    num_free_connections: Rc<RefCell<usize>>,
+    on_new_request: Box<dyn Fn(Request<ReqType, ResType>) + Send>,
+    incoming_response_channel: crossbeam_channel::Receiver<Response<ResType>>,
+    outgoing_response_channel: crossbeam_channel::Sender<Response<ResType>>,
+}
+
+impl<ReqType: Sized + Copy, ResType: Sized + Copy> ConnectionList<ReqType, ResType> {
     fn new(
         pipe_name: Vec<u16>,
-        stop_event: Event,
+        stop_event: ManuallyDrop<Event>,
         num_free_connections: Rc<RefCell<usize>>,
-        on_connect: Rc<Box<dyn Fn(&mut Connection) -> Result<(), Error>>>,
-    ) -> ConnectionList {
-        ConnectionList {
+        on_new_request: Box<dyn Fn(Request<ReqType, ResType>) + Send>,
+    ) -> Result<Self, Error> {
+        let (outgoing_response_channel, incoming_response_channel) = crossbeam_channel::unbounded();
+        let response_ready_event = Event::new()?;
+        let response_ready_event_borrow = response_ready_event.borrow();
+        Ok(ConnectionList {
             pipe_name,
-            events: vec![stop_event],
-            connections: Some(Vec::new()),
+            connections: Vec::new(),
+            response_ready_event: Arc::new(response_ready_event),
+            event_list: EventList::new(stop_event, response_ready_event_borrow),
             num_free_connections,
-            on_connect,
-        }
+            on_new_request,
+            incoming_response_channel,
+            outgoing_response_channel,
+        })
     }
 
     fn grow(&mut self, amount: usize) -> Result<(), Error> {
         trace!("Growing server connection list by {}", amount);
         *self.num_free_connections.borrow_mut() += amount;
-        self.events.reserve(amount);
-        self.connections.as_mut().unwrap().reserve(amount);
+        self.event_list.events.reserve(amount);
+        self.connections.reserve(amount);
         for _ in 0..amount {
-            let event = Event::new(false)?;
-            let mut connection = Connection::new(
-                &self.pipe_name,
-                &event,
-                self.num_free_connections.clone(),
-                self.on_connect.clone(),
-            )?;
+            let event = ManuallyDrop::new(Event::new()?);
+            let mut connection =
+                Connection::new(&self.pipe_name, &event, self.num_free_connections.clone())?;
             connection.connect()?;
-            self.events.push(event);
-            self.connections.as_mut().unwrap().push(connection);
+            self.event_list.events.push(event);
+            self.connections.push(connection);
         }
         Ok(())
     }
@@ -398,22 +455,32 @@ impl ConnectionList {
     fn poll(&mut self) -> Result<bool, Error> {
         let wait_result = unsafe {
             WaitForMultipleObjects(
-                self.events.len() as DWORD,
-                self.events.as_ptr() as *const HANDLE,
+                self.event_list.events.len() as DWORD,
+                self.event_list.events.as_ptr() as *const HANDLE,
                 FALSE,
                 INFINITE,
             )
         };
         match wait_result {
-            WAIT_FAILED => Err(Error::from(WindowsError::last())),
+            WAIT_FAILED => Err(Error::PollFailed(WindowsError::last())),
             WAIT_TIMEOUT => panic!("Pipe wait timed out somehow"),
             WAIT_OBJECT_0 => {
                 trace!("Received stop event");
                 Ok(true)
             }
             _ => {
-                let index = (wait_result - WAIT_OBJECT_0 - 1) as usize;
-                let conn = self.connections.as_mut().unwrap().get_mut(index).unwrap();
+                if wait_result == WAIT_OBJECT_0 + 1 {
+                    trace!("Response is ready");
+                    let response = self.incoming_response_channel.recv().unwrap();
+                    let conn = self.connections.get_mut(response.index).unwrap();
+                    if conn.id == response.id && conn.state == ConnectionState::AwaitingResponse {
+                        conn.write_response(response.message);
+                    }
+                    return Ok(false);
+                }
+
+                let index = (wait_result - WAIT_OBJECT_0 - 2) as usize;
+                let conn = self.connections.get_mut(index).unwrap();
                 trace!(
                     "Client {} has been signalled with state {:?}",
                     index,
@@ -421,35 +488,58 @@ impl ConnectionList {
                 );
                 match conn.state {
                     ConnectionState::Connecting => match conn.get_overlapped_result() {
-                        Ok(_) => conn.on_new_connection()?,
+                        Ok(_) => conn.on_new_connection(),
                         Err(e) => {
                             error!("Error connecting to client: {}", e);
                             conn.reconnect()?;
                         }
                     },
                     ConnectionState::Reading => match conn.get_overlapped_result() {
-                        Ok(_) => conn.on_read_complete()?,
+                        // Send request to the callback
+                        Ok(num_transferred) => {
+                            if num_transferred != mem::size_of::<ReqType>() {
+                                error!("Read size does not match request type size");
+                                conn.reconnect()?;
+                            } else {
+                                let message = conn.on_read_complete();
+                                let request = Request {
+                                    index,
+                                    id: conn.id,
+                                    message,
+                                    event: self.response_ready_event.clone(),
+                                    channel: self.outgoing_response_channel.clone(),
+                                };
+                                (self.on_new_request)(request);
+                            }
+                        }
                         Err(e) => {
                             error!("Pipe read error: {}", e);
-                            conn.on_io_error(e)?;
                             conn.reconnect()?;
                         }
                     },
                     ConnectionState::Writing => match conn.get_overlapped_result() {
-                        Ok(_) => conn.on_write_complete()?,
+                        // Begin reading next message
+                        Ok(num_transferred) => {
+                            if num_transferred != mem::size_of::<ResType>() {
+                                error!("Write size does not match response type size");
+                                conn.reconnect()?;
+                            } else {
+                                conn.read_request()
+                            }
+                        }
                         Err(e) => {
                             error!("Pipe write error: {}", e);
-                            conn.on_io_error(e)?;
                             conn.reconnect()?;
                         }
                     },
                     ConnectionState::FailedIo(e) => {
                         error!("Pipe I/O error: {}", e);
-                        conn.on_io_error(e)?;
                         conn.reconnect()?;
                     }
                     ConnectionState::Disconnected => panic!("Disconnected state somehow signalled"),
-                    ConnectionState::Idle => panic!("Idle state somehow signalled"),
+                    ConnectionState::AwaitingResponse => {
+                        panic!("Await-response state somehow signalled")
+                    }
                 }
                 Ok(false)
             }
@@ -457,93 +547,63 @@ impl ConnectionList {
     }
 }
 
-impl Drop for ConnectionList {
-    fn drop(&mut self) {
-        // free connections before events
-        self.connections = None;
-        for event in self.events.iter_mut().skip(1) {
-            // free every event but the stop event
-            event.free().unwrap();
-        }
-    }
-}
-
 pub struct PipeServer {
-    poll_thread: Option<JoinHandle<Result<(), Error>>>,
+    poll_thread: Option<JoinHandle<()>>,
     poll_thread_stop_event: Event,
-    stopped: bool,
 }
 
 impl PipeServer {
-    pub fn new(
+    pub fn new<ReqType: Sized + Copy, ResType: Sized + Copy>(
         pipe_name: impl AsRef<str>,
-        on_connect: Box<dyn Fn(&mut Connection) -> Result<(), Error> + Send>,
-        on_fail: Option<Box<dyn Fn() + Send>>,
-    ) -> Result<Self, WindowsError> {
+        on_new_request: impl Fn(Request<ReqType, ResType>) + Send + 'static,
+        on_fail: impl FnOnce(Error) + Send + 'static,
+    ) -> Result<Self, Error> {
         trace!("Creating pipe server named \"{}\"", pipe_name.as_ref());
         let pipe_name = util::osstring_to_wstr(OsString::from(format!(
             "\\\\.\\pipe\\{}",
             pipe_name.as_ref()
         )));
-        let poll_thread_stop_event = Event::new(false)?;
-        let stop_event = poll_thread_stop_event.clone();
-        let poll_thread = Some(thread::spawn(move || -> Result<(), Error> {
-            let num_free_connections = Rc::new(RefCell::new(0));
-            let mut conn_list = ConnectionList::new(
-                pipe_name,
-                stop_event,
-                num_free_connections.clone(),
-                Rc::new(on_connect),
-            );
+        let poll_thread_stop_event = Event::new()?;
+        let stop_event = poll_thread_stop_event.borrow();
+        let poll_thread = Some(thread::spawn(move || {
+            let run = move || -> Result<(), Error> {
+                let num_free_connections = Rc::new(RefCell::new(0));
+                let mut conn_list = ConnectionList::new(
+                    pipe_name,
+                    stop_event,
+                    num_free_connections.clone(),
+                    Box::new(on_new_request),
+                )?;
 
-            loop {
-                if *num_free_connections.borrow() == 0 {
-                    if let Err(e) = conn_list.grow(16) {
-                        if let Some(cb) = on_fail.as_ref() {
-                            cb();
+                loop {
+                    if *num_free_connections.borrow() == 0 {
+                        conn_list.grow(16)?;
+                    }
+                    match conn_list.poll() {
+                        Ok(true) => break,
+                        Ok(false) => {}
+                        Err(e) => {
+                            return Err(e);
                         }
-                        return Err(e);
                     }
                 }
-                match conn_list.poll() {
-                    Ok(true) => break,
-                    Ok(false) => {}
-                    Err(e) => {
-                        if let Some(cb) = on_fail.as_ref() {
-                            cb();
-                        }
-                        return Err(e);
-                    }
-                }
+                Ok(())
+            };
+            if let Err(e) = run() {
+                on_fail(e);
             }
-            Ok(())
         }));
         Ok(PipeServer {
             poll_thread,
             poll_thread_stop_event,
-            stopped: false,
         })
-    }
-
-    pub fn stop(mut self) -> Result<(), Error> {
-        self.stop_mut_ref()
-    }
-
-    fn stop_mut_ref(&mut self) -> Result<(), Error> {
-        trace!("Stopping pipe server");
-        self.stopped = true;
-        self.poll_thread_stop_event.set().unwrap();
-        let result = self.poll_thread.take().unwrap().join().unwrap();
-        self.poll_thread_stop_event.free().unwrap();
-        result
     }
 }
 
 impl Drop for PipeServer {
     fn drop(&mut self) {
-        if !self.stopped {
-            self.stop_mut_ref().unwrap();
-        }
+        self.poll_thread_stop_event.set().unwrap();
+        self.poll_thread.take().unwrap().join().unwrap();
     }
 }
 
@@ -551,6 +611,7 @@ impl Drop for PipeServer {
 mod tests {
     use super::*;
     use flexi_logger::Logger;
+    use std::marker::PhantomData;
     use std::str;
     use std::{thread, time};
     use winapi::um::fileapi::CreateFileW;
@@ -560,11 +621,13 @@ mod tests {
     use winapi::um::winnt::GENERIC_READ;
     use winapi::um::winnt::GENERIC_WRITE;
 
-    struct TestClient {
+    struct TestClient<ReqType: Sized + Copy, ResType: Sized + Copy> {
         handle: HANDLE,
+        reqtype: PhantomData<ReqType>,
+        restype: PhantomData<ResType>,
     }
 
-    impl TestClient {
+    impl<ReqType: Sized + Copy, ResType: Sized + Copy> TestClient<ReqType, ResType> {
         fn new(pipe_name: impl AsRef<str>) -> Result<Self, WindowsError> {
             let handle = unsafe {
                 CreateFileW(
@@ -593,22 +656,24 @@ mod tests {
                     unsafe { CloseHandle(handle) };
                     Err(WindowsError::last())
                 } else {
-                    Ok(TestClient { handle })
+                    Ok(TestClient {
+                        handle,
+                        restype: PhantomData,
+                        reqtype: PhantomData,
+                    })
                 }
             }
         }
 
-        fn write(&mut self, data: impl AsRef<[u8]>) -> Result<(), WindowsError> {
-            let mut nbw: DWORD = unsafe { mem::uninitialized() };
-            let result = unsafe {
-                WriteFile(
-                    self.handle,
-                    data.as_ref().as_ptr() as LPCVOID,
-                    data.as_ref().len() as DWORD,
-                    &mut nbw as *mut DWORD,
-                    ptr::null_mut(),
-                )
-            };
+        unsafe fn write(&mut self, data: *const u8, size: usize) -> Result<(), WindowsError> {
+            let mut nbw: DWORD = mem::uninitialized();
+            let result = WriteFile(
+                self.handle,
+                data as LPCVOID,
+                size as DWORD,
+                &mut nbw as *mut DWORD,
+                ptr::null_mut(),
+            );
             if result == FALSE {
                 Err(WindowsError::last())
             } else {
@@ -616,27 +681,38 @@ mod tests {
             }
         }
 
-        fn read(&mut self, size: usize) -> Result<Vec<u8>, WindowsError> {
-            let mut buf: Vec<u8> = vec![0; size];
-            let mut nbr: DWORD = unsafe { mem::uninitialized() };
-            let result = unsafe {
-                ReadFile(
-                    self.handle,
-                    buf.as_mut_ptr() as LPVOID,
-                    buf.len() as DWORD,
-                    &mut nbr as *mut DWORD,
-                    ptr::null_mut(),
-                )
-            };
+        unsafe fn read(&mut self, data: *mut u8, size: usize) -> Result<(), WindowsError> {
+            let mut nbr: DWORD = mem::uninitialized();
+            let result = ReadFile(
+                self.handle,
+                data as LPVOID,
+                size as DWORD,
+                &mut nbr as *mut DWORD,
+                ptr::null_mut(),
+            );
+
             if result == FALSE {
                 Err(WindowsError::last())
             } else {
-                Ok(buf)
+                Ok(())
             }
+        }
+
+        fn request(&mut self, req: ReqType) -> ResType {
+            unsafe {
+                self.write(&req as *const _ as *const u8, mem::size_of::<ReqType>())
+                    .unwrap()
+            };
+            let mut res = unsafe { mem::uninitialized() };
+            unsafe {
+                self.read(&mut res as *mut _ as *mut u8, mem::size_of::<ResType>())
+                    .unwrap()
+            };
+            res
         }
     }
 
-    impl Drop for TestClient {
+    impl<ReqType: Sized + Copy, ResType: Sized + Copy> Drop for TestClient<ReqType, ResType> {
         fn drop(&mut self) {
             unsafe { CloseHandle(self.handle) };
         }
@@ -644,41 +720,36 @@ mod tests {
 
     #[test]
     fn create_and_stop() {
-        let ps = PipeServer::new("test_server", Box::new(|_| Ok(())), None).unwrap();
-        thread::sleep(time::Duration::from_millis(1000));
-        ps.stop().unwrap();
-    }
-
-    #[test]
-    fn trivial_io() {
-        Logger::with_str("trace").start().unwrap();
-        let ps = PipeServer::new(
-            "test_server",
-            Box::new(|conn| {
-                println!("New client!");
-                conn.read(
-                    7,
-                    Some(Box::new(|conn, msg| {
-                        println!("Got message! {}", str::from_utf8(msg.as_slice()).unwrap());
-                        conn.write("RESPOND", None, None);
-                        Ok(())
-                    })),
-                    None,
-                );
-                Ok(())
-            }),
-            None,
+        let _ps = PipeServer::new(
+            "wlw_test_create_and_stop",
+            |_: Request<usize, usize>| {},
+            |_| {},
         )
         .unwrap();
         thread::sleep(time::Duration::from_millis(1000));
-        // Test sending/receiving message
-        let mut client = TestClient::new("test_server").unwrap();
-        client.write("MESSAGE").unwrap();
-        println!(
-            "Got message: {}",
-            str::from_utf8(client.read(7).unwrap().as_slice()).unwrap()
-        );
+    }
+
+    #[test]
+    fn trivial_reqres() {
+        Logger::with_str("trace").start().unwrap();
+        let _ps = PipeServer::new(
+            "wlw_test_trivial_reqres",
+            |request: Request<[u8; 4], [u8; 4]>| {
+                trace!("GOT REQUEST: {:?}", request.message);
+                let response = [0, 1, 2, 3];
+                request.respond(response);
+            },
+            |_| {
+                error!("Server broke :(");
+            },
+        )
+        .unwrap();
         thread::sleep(time::Duration::from_millis(1000));
-        ps.stop().unwrap();
+
+        // Test sending/receiving message
+        let mut client: TestClient<[u8; 4], [u8; 4]> =
+            TestClient::new("wlw_test_trivial_reqres").unwrap();
+        trace!("GOT RESPONSE: {:?}", client.request([3, 2, 1, 0]));
+        thread::sleep(time::Duration::from_millis(1000));
     }
 }

@@ -5,15 +5,15 @@ authors = ["Eliza Velasquez <elizagamedev@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-winapi = { version = "0.3.6", features = ["minwindef", "windef", "winuser", "errhandlingapi", "winbase", "winerror", "namedpipeapi", "ioapiset"] }
-ctrlc = "3.1.1"
+winapi = { version = "0.3.6", features = ["minwindef", "windef", "winuser", "errhandlingapi", "winbase", "winerror", "namedpipeapi", "ioapiset", "synchapi"] }
+wintrap = "0.1.1"
 log = "0.4"
 flexi_logger = "0.10.4"
 failure = "0.1.5"
+crossbeam-channel = "0.3.6"
 
 [target.'cfg(debug_assertions)'.dependencies]
 glob = "0.2.11"
-
 
 [[bin]]
 name = "wlw-server"

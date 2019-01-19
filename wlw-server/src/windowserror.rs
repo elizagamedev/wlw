@@ -1,5 +1,5 @@
 use crate::util;
-use std::{fmt, mem, ptr};
+use std::{error, fmt, mem, ptr};
 use winapi::shared::minwindef::{DWORD, HLOCAL};
 use winapi::shared::ntdef::{LANG_NEUTRAL, LPWSTR, MAKELANGID, SUBLANG_DEFAULT};
 use winapi::um::errhandlingapi::GetLastError;
@@ -8,7 +8,7 @@ use winapi::um::winbase::{
     FORMAT_MESSAGE_IGNORE_INSERTS,
 };
 
-#[derive(Debug, Fail, PartialEq, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct WindowsError(DWORD);
 
 impl WindowsError {
@@ -23,6 +23,8 @@ impl WindowsError {
         WindowsError::new(unsafe { GetLastError() })
     }
 }
+
+impl error::Error for WindowsError {}
 
 impl fmt::Display for WindowsError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
