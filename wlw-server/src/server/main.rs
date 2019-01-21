@@ -6,6 +6,7 @@ pub mod context;
 pub mod debug;
 pub mod hookevent;
 pub mod hookmanager;
+pub mod luauserdata;
 pub mod pipeserver;
 use crate::context::Context;
 use crossbeam_channel as xchan;

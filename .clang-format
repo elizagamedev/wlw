@@ -10,7 +10,7 @@ AlwaysBreakBeforeMultilineStrings: 'true'
 AlwaysBreakTemplateDeclarations: 'true'
 BinPackParameters: 'false'
 BreakBeforeBinaryOperators: 'true'
-BreakBeforeBraces: Linux
+BreakBeforeBraces: Attach
 BreakBeforeTernaryOperators: 'true'
 BreakConstructorInitializersBeforeComma: 'true'
 ConstructorInitializerAllOnOneLineOrOnePerLine: 'false'

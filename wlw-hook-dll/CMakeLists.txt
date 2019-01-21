@@ -23,3 +23,8 @@ add_executable(size_test
   HookEvent.h)
 set_target_properties(size_test PROPERTIES
   C_STANDARD 99)
+
+add_executable(worthiness_test
+  worthiness_test.c)
+set_target_properties(worthiness_test PROPERTIES
+  C_STANDARD 99)

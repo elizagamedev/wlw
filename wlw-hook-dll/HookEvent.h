@@ -1,23 +1,21 @@
 #pragma once
 
-#include <windows.h>
 #include <stdint.h>
+#include <windows.h>
 
-enum Type {
-    TYPE_CWP_SIZE,
-    TYPE_CBT_ACTIVATE,
-    TYPE_CBT_CREATE_WINDOW,
-    TYPE_CBT_DESTROY_WINDOW,
-    TYPE_CBT_MIN_MAX,
-    TYPE_CBT_MOVE_SIZE,
+enum Kind {
+    KIND_CWP_SHOW_WINDOW,
+    KIND_CBT_ACTIVATE,
+    KIND_CBT_CREATE_WINDOW,
+    KIND_CBT_DESTROY_WINDOW,
+    KIND_CBT_MIN_MAX,
+    KIND_CBT_MOVE_SIZE,
 };
 
 typedef uint8_t PortableBOOL;
 typedef uint32_t PortableDWORD;
 typedef uint32_t PortableHWND;
-typedef uint32_t PortableHINSTANCE;
-typedef uint32_t PortableHMENU;
-typedef uint32_t PortableLONG;
+typedef int32_t PortableLONG;
 typedef int32_t PortableInt;
 
 #pragma pack(push, 1)
@@ -30,41 +28,42 @@ struct _PortableRECT {
 typedef struct _PortableRECT PortableRECT;
 
 struct _HookEvent {
-    uint8_t type;
+    uint8_t kind;
     union {
         struct {
             PortableHWND hwnd;
-            PortableDWORD size;
-        } cwpSizeData;
+            PortableBOOL shown;
+        } cwp_show_window_data;
         struct {
             PortableHWND hwnd;
-            PortableBOOL fMouse;
-            PortableHWND hWndActive;
-        } cbtActivateData;
-        struct {
-            PortableHWND hwnd;
-            PortableHINSTANCE hInstance;
-            PortableHMENU hMenu;
-            PortableHWND hwndParent;
-            PortableInt cy;
-            PortableInt cx;
-            PortableInt y;
-            PortableInt x;
-            PortableLONG style;
-            PortableDWORD dwExStyle;
-        } cbtCreateWindowData;
-        struct {
-            PortableHWND hwnd;
-        } cbtDestroyWindowData;
-        struct {
-            PortableHWND hwnd;
-            PortableInt nCmdShow;
-        } cbtMinMaxData;
+            PortableBOOL caused_by_mouse;
+        } cbt_activate_data;
         struct {
             PortableHWND hwnd;
             PortableRECT rect;
-        } cbtMoveSizeData;
+        } cbt_create_window_data;
+        struct {
+            PortableHWND hwnd;
+        } cbt_destroy_window_data;
+        struct {
+            PortableHWND hwnd;
+            PortableInt show_command;
+        } cbt_min_max_data;
+        struct {
+            PortableHWND hwnd;
+            PortableRECT rect;
+        } cbt_move_size_data;
     };
 };
 typedef struct _HookEvent HookEvent;
+
+struct _HookResponse {
+    union {
+        struct {
+            PortableRECT rect;
+        } pos_and_size_data;
+    };
+};
+typedef struct _HookResponse HookResponse;
+
 #pragma pack(pop)

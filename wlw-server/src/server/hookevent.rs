@@ -2,13 +2,14 @@
 #![allow(dead_code)]
 #![allow(non_snake_case)]
 use winapi::ctypes::*;
+use winapi::shared::minwindef::DWORD;
+use winapi::shared::ntdef::LONG;
+use winapi::shared::windef::{HWND, RECT};
 
 pub type PortableBOOL = u8;
 pub type PortableDWORD = u32;
 pub type PortableHWND = u32;
-pub type PortableHINSTANCE = u32;
-pub type PortableHMENU = u32;
-pub type PortableLONG = u32;
+pub type PortableLONG = i32;
 pub type PortableInt = i32;
 
 #[repr(packed)]
@@ -20,89 +21,76 @@ pub struct PortableRECT {
     bottom: PortableLONG,
 }
 
-const TYPE_CWP_SIZE: u8 = 0;
-const TYPE_CBT_ACTIVATE: u8 = 1;
-const TYPE_CBT_CREATE_WINDOW: u8 = 2;
-const TYPE_CBT_DESTROY_WINDOW: u8 = 3;
-const TYPE_CBT_MIN_MAX: u8 = 4;
-const TYPE_CBT_MOVE_SIZE: u8 = 5;
+impl From<RECT> for PortableRECT {
+    fn from(rect: RECT) -> Self {
+        PortableRECT {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        }
+    }
+}
+
+impl From<PortableRECT> for RECT {
+    fn from(rect: PortableRECT) -> Self {
+        RECT {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        }
+    }
+}
 
 pub enum HookEvent {
-    CwpSize {
-        hwnd: PortableHWND,
-        size: PortableDWORD,
-    },
-    CbtActivate {
-        hwnd: PortableHWND,
-        fMouse: PortableBOOL,
-        hWndActive: PortableHWND,
-    },
-    CbtCreateWindow {
-        hwnd: PortableHWND,
-        hInstance: PortableHINSTANCE,
-        hMenu: PortableHMENU,
-        hwndParent: PortableHWND,
-        cy: PortableInt,
-        cx: PortableInt,
-        y: PortableInt,
-        x: PortableInt,
-        style: PortableLONG,
-        dwExStyle: PortableDWORD,
-    },
-    CbtDestroyWindow {
-        hwnd: PortableHWND,
-    },
-    CbtMinMax {
-        hwnd: PortableHWND,
-        nCmdShow: PortableInt,
-    },
-    CbtMoveSize {
-        hwnd: PortableHWND,
-        rect: PortableRECT,
-    },
+    CwpShowWindow { hwnd: HWND, shown: bool },
+    CbtActivate { hwnd: HWND, caused_by_mouse: bool },
+    CbtCreateWindow { hwnd: HWND, rect: RECT },
+    CbtDestroyWindow { hwnd: HWND },
+    CbtMinMax { hwnd: HWND, show_command: c_int },
+    CbtMoveSize { hwnd: HWND, rect: RECT },
 }
 
 impl From<HookEventC> for HookEvent {
     fn from(hec: HookEventC) -> Self {
         unsafe {
             match hec.kind {
-                TYPE_CWP_SIZE => HookEvent::CwpSize {
-                    hwnd: hec.u.cwpSizeData.hwnd,
-                    size: hec.u.cwpSizeData.size,
+                TYPE_CWP_SHOW_WINDOW => HookEvent::CwpShowWindow {
+                    hwnd: hec.u.cwp_show_window_data.hwnd as HWND,
+                    shown: hec.u.cwp_show_window_data.shown != 0,
                 },
                 TYPE_CBT_ACTIVATE => HookEvent::CbtActivate {
-                    hwnd: hec.u.cbtActivateData.hwnd,
-                    fMouse: hec.u.cbtActivateData.fMouse,
-                    hWndActive: hec.u.cbtActivateData.hWndActive,
+                    hwnd: hec.u.cbt_activate_data.hwnd as HWND,
+                    caused_by_mouse: hec.u.cbt_activate_data.caused_by_mouse != 0,
                 },
                 TYPE_CBT_CREATE_WINDOW => HookEvent::CbtCreateWindow {
-                    hwnd: hec.u.cbtCreateWindowData.hwnd,
-                    hInstance: hec.u.cbtCreateWindowData.hInstance,
-                    hMenu: hec.u.cbtCreateWindowData.hMenu,
-                    hwndParent: hec.u.cbtCreateWindowData.hwndParent,
-                    cy: hec.u.cbtCreateWindowData.cy,
-                    cx: hec.u.cbtCreateWindowData.cx,
-                    y: hec.u.cbtCreateWindowData.y,
-                    x: hec.u.cbtCreateWindowData.x,
-                    style: hec.u.cbtCreateWindowData.style,
-                    dwExStyle: hec.u.cbtCreateWindowData.dwExStyle,
+                    hwnd: hec.u.cbt_create_window_data.hwnd as HWND,
+                    rect: RECT::from(hec.u.cbt_create_window_data.rect),
                 },
                 TYPE_CBT_DESTROY_WINDOW => HookEvent::CbtDestroyWindow {
-                    hwnd: hec.u.cbtDestroyWindowData.hwnd,
+                    hwnd: hec.u.cbt_destroy_window_data.hwnd as HWND,
                 },
                 TYPE_CBT_MIN_MAX => HookEvent::CbtMinMax {
-                    hwnd: hec.u.cbtMinMaxData.hwnd,
-                    nCmdShow: hec.u.cbtMinMaxData.nCmdShow,
+                    hwnd: hec.u.cbt_min_max_data.hwnd as HWND,
+                    show_command: hec.u.cbt_min_max_data.show_command,
                 },
                 TYPE_CBT_MOVE_SIZE => HookEvent::CbtMoveSize {
-                    hwnd: hec.u.cbtMoveSizeData.hwnd,
-                    rect: hec.u.cbtMoveSizeData.rect,
+                    hwnd: hec.u.cbt_move_size_data.hwnd as HWND,
+                    rect: RECT::from(hec.u.cbt_move_size_data.rect),
                 },
                 _ => unreachable!(),
             }
         }
     }
 }
+
+const TYPE_CWP_SHOW_WINDOW: u8 = 0;
+const TYPE_CBT_ACTIVATE: u8 = 1;
+const TYPE_CBT_CREATE_WINDOW: u8 = 2;
+const TYPE_CBT_DESTROY_WINDOW: u8 = 3;
+const TYPE_CBT_MIN_MAX: u8 = 4;
+const TYPE_CBT_MOVE_SIZE: u8 = 5;
 
 #[repr(packed)]
 #[derive(Copy, Clone)]
@@ -114,42 +102,33 @@ pub struct HookEventC {
 #[repr(packed)]
 #[derive(Copy, Clone)]
 union HookEventUnion {
-    cwpSizeData: CwpSizeData,
-    cbtActivateData: CbtActivateData,
-    cbtCreateWindowData: CbtCreateWindowData,
-    cbtDestroyWindowData: CbtDestroyWindowData,
-    cbtMinMaxData: CbtMinMaxData,
-    cbtMoveSizeData: CbtMoveSizeData,
+    cwp_show_window_data: CwpShowWindowData,
+    cbt_activate_data: CbtActivateData,
+    cbt_create_window_data: CbtCreateWindowData,
+    cbt_destroy_window_data: CbtDestroyWindowData,
+    cbt_min_max_data: CbtMinMaxData,
+    cbt_move_size_data: CbtMoveSizeData,
 }
 
 #[repr(packed)]
 #[derive(Copy, Clone)]
-struct CwpSizeData {
+struct CwpShowWindowData {
     hwnd: PortableHWND,
-    size: PortableDWORD,
+    shown: PortableBOOL,
 }
 
 #[repr(packed)]
 #[derive(Copy, Clone)]
 struct CbtActivateData {
     hwnd: PortableHWND,
-    fMouse: PortableBOOL,
-    hWndActive: PortableHWND,
+    caused_by_mouse: PortableBOOL,
 }
 
 #[repr(packed)]
 #[derive(Copy, Clone)]
 struct CbtCreateWindowData {
     hwnd: PortableHWND,
-    hInstance: PortableHINSTANCE,
-    hMenu: PortableHMENU,
-    hwndParent: PortableHWND,
-    cy: PortableInt,
-    cx: PortableInt,
-    y: PortableInt,
-    x: PortableInt,
-    style: PortableLONG,
-    dwExStyle: PortableDWORD,
+    rect: PortableRECT,
 }
 
 #[repr(packed)]
@@ -162,7 +141,7 @@ struct CbtDestroyWindowData {
 #[derive(Copy, Clone)]
 struct CbtMinMaxData {
     hwnd: PortableHWND,
-    nCmdShow: PortableInt,
+    show_command: PortableInt,
 }
 
 #[repr(packed)]
@@ -170,4 +149,16 @@ struct CbtMinMaxData {
 struct CbtMoveSizeData {
     hwnd: PortableHWND,
     rect: PortableRECT,
+}
+
+#[repr(packed)]
+#[derive(Copy, Clone)]
+pub union HookResponse {
+    pub pos_and_size_data: PosAndSizeData,
+}
+
+#[repr(packed)]
+#[derive(Copy, Clone)]
+pub struct PosAndSizeData {
+    pub rect: PortableRECT,
 }

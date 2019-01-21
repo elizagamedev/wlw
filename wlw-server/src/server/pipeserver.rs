@@ -345,7 +345,6 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> Connection<ReqType, ResType> 
     }
 
     fn write(&mut self, response: ResType) -> Result<PollAction<ReqType>, Error> {
-        trace!("Writing response");
         assert_eq!(self.state, ConnectionState::AwaitingResponse);
         unsafe {
             self.io_buffer.res = response;
@@ -380,7 +379,6 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> Connection<ReqType, ResType> 
     }
 
     fn read(&mut self) -> Result<PollAction<ReqType>, Error> {
-        trace!("Reading request");
         match unsafe {
             self.pipe.read(
                 &mut self.io_buffer as *mut _ as *mut u8,
@@ -398,28 +396,24 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> Connection<ReqType, ResType> 
     }
 
     fn on_new_connection(&mut self) -> Result<PollAction<ReqType>, Error> {
-        trace!("on_new_connection");
         *self.num_free_connections.borrow_mut() -= 1;
         // Begin reading from the client
         self.read()
     }
 
     fn on_read_complete(&mut self) -> Result<PollAction<ReqType>, Error> {
-        trace!("on_read_complete: Setting to AwaitingResponse");
         Event::from(self.overlap.hEvent).reset()?;
         self.state = ConnectionState::AwaitingResponse;
         Ok(PollAction::DispatchRequest(unsafe { self.io_buffer.req }))
     }
 
     fn on_write_complete(&mut self) -> Result<PollAction<ReqType>, Error> {
-        trace!("on_write_complete");
         // Begin reading from client again
         self.read()
     }
 
     fn disconnect(&mut self) -> Result<(), Error> {
         if self.state != ConnectionState::Disconnected {
-            trace!("Disconnecting an active client connection");
             self.id += 1;
             self.state = ConnectionState::Disconnected;
             *self.num_free_connections.borrow_mut() -= 1;
@@ -497,7 +491,6 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> ConnectionList<ReqType, ResTy
     }
 
     fn grow(&mut self, amount: usize) -> Result<(), Error> {
-        trace!("Growing server connection list by {}", amount);
         *self.num_free_connections.borrow_mut() += amount;
         self.event_list.events.reserve(amount);
         self.connections.reserve(amount);
@@ -524,10 +517,7 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> ConnectionList<ReqType, ResTy
         match wait_result {
             WAIT_FAILED => Err(Error::PollFailed(WindowsError::last())),
             WAIT_TIMEOUT => panic!("Pipe wait timed out somehow"),
-            WAIT_OBJECT_0 => {
-                trace!("Received stop event");
-                Ok(true)
-            }
+            WAIT_OBJECT_0 => Ok(true),
             _ => {
                 let (index, mut result) = if wait_result == WAIT_OBJECT_0 + 1 {
                     let response = self.incoming_response_channel.recv().unwrap();
@@ -536,14 +526,8 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> ConnectionList<ReqType, ResTy
                     if conn.id == response.id {
                         if conn.state == ConnectionState::AwaitingResponse {
                             match response.message {
-                                Some(message) => {
-                                    trace!("Client {}.{} response is ready", index, conn.id);
-                                    (index, conn.write(message))
-                                }
-                                None => {
-                                    trace!("Client {}.{} response is empty", index, conn.id);
-                                    (index, conn.read())
-                                }
+                                Some(message) => (index, conn.write(message)),
+                                None => (index, conn.read()),
                             }
                         } else {
                             unreachable!();
@@ -554,12 +538,6 @@ impl<ReqType: Sized + Copy, ResType: Sized + Copy> ConnectionList<ReqType, ResTy
                 } else {
                     let index = (wait_result - WAIT_OBJECT_0 - 2) as usize;
                     let conn = self.connections.get_mut(index).unwrap();
-                    trace!(
-                        "Client {}.{} has been signalled with state {:?}",
-                        index,
-                        conn.id,
-                        conn.state
-                    );
                     (
                         index,
                         match conn.state {
