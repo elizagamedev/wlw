@@ -562,7 +562,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "wintrap"
-version = "0.1.1"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "crossbeam-channel 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -582,7 +582,7 @@ dependencies = [
  "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "rlua 0.16.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "winapi 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
- "wintrap 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wintrap 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [metadata]
@@ -657,4 +657,4 @@ dependencies = [
 "checksum winapi 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)" = "92c1eb33641e276cfa214a0522acad57be5c56b10cb348b3c5117db75f3ac4b0"
 "checksum winapi-i686-pc-windows-gnu 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
 "checksum winapi-x86_64-pc-windows-gnu 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
-"checksum wintrap 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)" = "f87d315f8c3aa59d5fa09353a1d245d2dbe67e8fcd84cccff8601bd0c6e35a15"
+"checksum wintrap 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)" = "5ed03ef3a7a4d4344b55708bfbfcda4fd1289d86ad064942ba5b091f1c84251a"

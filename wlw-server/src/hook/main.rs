@@ -8,7 +8,7 @@ use std::env;
 use std::error::Error;
 use std::fmt;
 use wintrap::{self, Signal};
-use wlw_server::windowserror::WindowsError;
+use wlw_server::windows;
 #[macro_use]
 extern crate log;
 use flexi_logger::Logger;
@@ -19,9 +19,9 @@ enum MainError {
     PidIsInvalid,
     PidIs0,
     HookDllIsMissing,
-    DllLoadError(WindowsError),
-    DllHookError(WindowsError),
-    EventLoop(WindowsError),
+    DllLoadError(windows::Error),
+    DllHookError(windows::Error),
+    EventLoop(windows::Error),
 }
 
 impl fmt::Display for MainError {
@@ -41,9 +41,9 @@ impl fmt::Display for MainError {
 impl Error for MainError {}
 
 fn run() -> Result<i32, MainError> {
-    let main_thread_id = windowsloop::get_current_thread_id();
+    let main_thread_id = unsafe { windows::GetCurrentThreadId() };
     wintrap::trap(
-        &[Signal::CtrlC, Signal::CloseWindow, Signal::CloseConsole],
+        vec![Signal::CtrlC, Signal::CloseWindow, Signal::CloseConsole],
         move |_| {
             trace!("Received interrupt");
             windowsloop::post_quit_message(main_thread_id, 1).unwrap();

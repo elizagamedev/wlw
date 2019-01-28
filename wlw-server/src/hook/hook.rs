@@ -1,13 +1,6 @@
 use std::ffi::CString;
 use std::mem;
-use winapi::ctypes::c_int;
-use winapi::shared::minwindef::{FARPROC, HMODULE, LPARAM, LRESULT, WPARAM};
-use winapi::shared::windef::HHOOK;
-use winapi::um::libloaderapi::{FreeLibrary, GetProcAddress, LoadLibraryW};
-pub use winapi::um::winuser::HOOKPROC;
-use winapi::um::winuser::{SetWindowsHookExW, UnhookWindowsHookEx, WH_CALLWNDPROC, WH_CBT};
-use wlw_server::util;
-use wlw_server::windowserror::WindowsError;
+use wlw_server::windows;
 
 #[derive(Debug)]
 pub enum HookId {
@@ -17,74 +10,58 @@ pub enum HookId {
 
 pub struct WindowsHook {
     hook_id: HookId,
-    hook: HHOOK,
+    hook: windows::HHOOK,
 }
 
 impl WindowsHook {
-    pub fn new(
-        hook_id: HookId,
-        hook_proc: HookProc,
-        library: &Library,
-    ) -> Result<Self, WindowsError> {
+    pub fn new(hook_id: HookId, hook_proc: HookProc, library: &Library) -> windows::Result<Self> {
         trace!("Registering Windows hook: {:?}", hook_id);
         let winapi_hook_id = match hook_id {
-            HookId::CallWndProc => WH_CALLWNDPROC,
-            HookId::Cbt => WH_CBT,
+            HookId::CallWndProc => windows::WH_CALLWNDPROC,
+            HookId::Cbt => windows::WH_CBT,
         };
-        unsafe {
-            let hook = SetWindowsHookExW(winapi_hook_id, Some(hook_proc), library.handle, 0);
-            if hook.is_null() {
-                Err(WindowsError::last())
-            } else {
-                Ok(WindowsHook { hook_id, hook })
-            }
-        }
+        let hook = unsafe {
+            windows::SetWindowsHookEx(winapi_hook_id, Some(hook_proc), library.handle, 0)
+        }?;
+        Ok(WindowsHook { hook_id, hook })
     }
 }
 
 impl Drop for WindowsHook {
     fn drop(&mut self) {
         trace!("Unregistering Windows hook: {:?}", self.hook_id);
-        unsafe {
-            UnhookWindowsHookEx(self.hook);
-        }
+        unsafe { windows::UnhookWindowsHookEx(self.hook) }.unwrap();
     }
 }
 
 pub struct Library {
-    handle: HMODULE,
+    handle: windows::HMODULE,
 }
 
 impl Library {
-    pub fn new(path: &str) -> Result<Self, WindowsError> {
-        let wide_path = util::osstring_to_wstr(path);
-        let handle = unsafe { LoadLibraryW(wide_path.as_ptr()) };
-        if handle.is_null() {
-            Err(WindowsError::last())
-        } else {
-            Ok(Library { handle })
-        }
+    pub fn new(path: &str) -> windows::Result<Self> {
+        let handle = unsafe { windows::LoadLibrary(path) }?;
+        Ok(Library { handle })
     }
 
-    pub fn get_proc_address(&self, name: &str) -> Result<FARPROC, WindowsError> {
+    pub fn get_proc_address(&self, name: &str) -> windows::Result<windows::FARPROC> {
         let c_name = CString::new(name).expect("CString::new failed");
-        let result = unsafe { GetProcAddress(self.handle, c_name.as_ptr()) };
-        if result.is_null() {
-            Err(WindowsError::last())
-        } else {
-            Ok(result)
-        }
+        let result = unsafe { windows::GetProcAddress(self.handle, c_name) }?;
+        Ok(result)
     }
 }
 
 impl Drop for Library {
     fn drop(&mut self) {
-        unsafe { FreeLibrary(self.handle) };
+        unsafe { windows::FreeLibrary(self.handle) }.unwrap();
     }
 }
 
-pub type HookProc =
-    unsafe extern "system" fn(code: c_int, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
+pub type HookProc = unsafe extern "system" fn(
+    code: windows::c_int,
+    wParam: windows::WPARAM,
+    lParam: windows::LPARAM,
+) -> windows::LRESULT;
 
 pub struct HookDll {
     pub library: Library,
@@ -93,12 +70,13 @@ pub struct HookDll {
 }
 
 impl HookDll {
-    pub fn new(library: Library, server_pid: u32) -> Result<HookDll, WindowsError> {
+    pub fn new(library: Library, server_pid: u32) -> Result<HookDll, windows::Error> {
         unsafe {
-            let callwndproc_proc =
-                mem::transmute::<FARPROC, HookProc>(library.get_proc_address("callwndproc_proc")?);
+            let callwndproc_proc = mem::transmute::<windows::FARPROC, HookProc>(
+                library.get_proc_address("callwndproc_proc")?,
+            );
             let cbt_proc =
-                mem::transmute::<FARPROC, HookProc>(library.get_proc_address("cbt_proc")?);
+                mem::transmute::<windows::FARPROC, HookProc>(library.get_proc_address("cbt_proc")?);
             #[allow(clippy::cast_ptr_alignment)]
             let server_pid_ptr = library.get_proc_address("server_pid")? as *mut u32;
             *server_pid_ptr = server_pid;

@@ -18,7 +18,7 @@ fn run() -> Result<(), context::Error> {
     let interrupt_event_sender = event_sender.clone();
     let mut context = Context::new(event_sender, event_receiver)?;
     wintrap::trap(
-        &[Signal::CtrlC, Signal::CloseWindow, Signal::CloseConsole],
+        vec![Signal::CtrlC, Signal::CloseWindow, Signal::CloseConsole],
         move |_| {
             interrupt_event_sender
                 .send(context::Event::Interrupt)

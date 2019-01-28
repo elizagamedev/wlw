@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 winapi = { version = "0.3.6", features = ["minwindef", "windef", "winuser", "errhandlingapi", "winbase", "winerror", "namedpipeapi", "ioapiset", "synchapi"] }
-wintrap = "0.1.1"
+wintrap = "0.2.1"
 log = "0.4"
 flexi_logger = "0.10.4"
 failure = "0.1.5"

@@ -5,12 +5,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use wlw_server::windowserror::WindowsError;
+use wlw_server::windows;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum Error {
-    ProcessHandleAquisition(WindowsError),
-    ServerSync(WindowsError),
+    ProcessHandleAquisition(windows::Error),
+    ServerSync(windows::Error),
     ServerQuit(u32),
 }
 

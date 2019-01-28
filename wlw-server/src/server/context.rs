@@ -11,11 +11,12 @@ use std::fs::File;
 use std::io::{self, Read};
 use winapi::shared::windef::HWND;
 use winapi::shared::windef::RECT;
+use wlw_server::windows;
 
 #[derive(Debug)]
 pub enum Error {
-    PipeServerInit(pipeserver::Error),
-    PipeServerFail(pipeserver::Error),
+    PipeServerInit(windows::Error),
+    PipeServerFail(windows::Error),
     LuaScriptOpen(io::Error),
     LuaInit(rlua::Error),
     LuaCallback(rlua::Error),
@@ -38,7 +39,7 @@ impl error::Error for Error {}
 pub enum Event {
     Interrupt,
     NewRequest(pipeserver::Request<HookEventC, HookResponse>),
-    PipeServerFail(pipeserver::Error),
+    PipeServerFail(windows::Error),
 }
 
 pub struct Context {

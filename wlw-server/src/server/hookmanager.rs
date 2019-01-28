@@ -25,6 +25,7 @@ impl HookBinaryPaths {
     }
 }
 
+#[derive(Default)]
 pub struct HookManager {
     monitor_thread: Option<thread::JoinHandle<()>>,
     monitor_thread_run: Arc<AtomicBool>,
